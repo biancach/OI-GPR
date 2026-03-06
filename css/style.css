@@ -1,0 +1,107 @@
+/* ==================== DISTILL OVERRIDES & ADDITIONS ====================
+   Distill template.v2.js handles base typography, layout, and math.
+   This file adds custom styling for interactive elements, sliders, etc.
+   ========================================================================= */
+
+/* Hide Distill byline bar */
+d-byline { display: none !important; }
+
+/* ==================== SVG DEFAULTS ==================== */
+d-article svg {
+    display: block;
+    margin: 0 auto;
+    background: white;
+    border-radius: 2px;
+}
+
+d-article figure {
+    margin: 1.5rem 0;
+}
+
+/* ==================== SLIDERS ==================== */
+.slider-container {
+    margin: 1.5rem 0;
+}
+
+.slider-label {
+    font-weight: 600;
+    margin-bottom: 0.8rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.slider-label .value {
+    color: #ff6f00;
+    font-family: 'Roboto Mono', 'Courier New', monospace;
+    font-weight: 700;
+}
+
+.d3-slider {
+    margin-bottom: 1rem;
+}
+
+.d3-slider .handle {
+    fill: #ff6f00;
+    stroke: #e65100;
+    stroke-width: 2px;
+}
+
+.d3-slider .track {
+    stroke: #ddd;
+    stroke-width: 8px;
+}
+
+.d3-slider .track-fill {
+    stroke: #ff6f00;
+    stroke-width: 8px;
+}
+
+/* ==================== BUTTONS ==================== */
+button {
+    background-color: #ff6f00;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: background-color 0.2s;
+}
+
+button:hover {
+    background-color: #e65100;
+}
+
+.button-group {
+    display: flex;
+    gap: 0.8rem;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+
+/* ==================== TOOLTIP ==================== */
+.tooltip {
+    position: absolute;
+    background-color: #333;
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 1000;
+}
+
+.tooltip.visible {
+    opacity: 1;
+}
+
+/* ==================== LEGEND ==================== */
+.legend {
+    font-size: 0.9rem;
+    color: #666;
+    margin-top: 1rem;
+}

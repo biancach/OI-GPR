@@ -1,0 +1,2786 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Optimal Interpolation</title>
+
+<!-- KaTeX for math rendering (must load BEFORE Distill template) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+
+<!-- Distill Template -->
+<script src="https://distill.pub/template.v2.js"></script>
+
+<!-- External Libraries -->
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-simple-slider@1.10.3/build/d3-simple-slider.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/d3-simple-slider@1.10.3/build/d3-simple-slider.css">
+
+<!-- Project CSS (overrides / additions to Distill) -->
+<link rel="stylesheet" href="css/style.css">
+
+<d-front-matter>
+  <script type="text/json">{
+    "title": "Optimal Interpolation",
+    "description": "An interactive introduction to optimal interpolation and Gaussian Processes for Earth sciences, using sea surface temperature in the tropical Pacific.",
+    "publishedDate": "2025-05-01",
+    "authors": [
+      {
+        "author": "Bianca Champenois"
+      }
+    ],
+    "katex": {
+      "delimiters": [
+        {"left": "$$", "right": "$$", "display": true},
+        {"left": "$", "right": "$", "display": false}
+      ]
+    }
+  }</script>
+</d-front-matter>
+
+<d-title>
+  <h1>Optimal Interpolation</h1>
+  <p>An Interactive Introduction to Optimal Interpolation and Gaussian Processes for Earth Sciences</p>
+</d-title>
+
+
+<d-article>
+
+  <!-- ======================== HERO: REAL MODIS SST DATA ======================== -->
+  <figure id="hero" class="l-page">
+    <div id="sst-hero-container" style="position:relative; background:#0f1529; border-radius:8px; overflow:hidden;">
+      <div id="sst-hero-loading" style="text-align:center; padding:3rem; color:#888;">Loading MODIS SST data...</div>
+      <canvas id="sst-hero-map"></canvas>
+      <div id="sst-hero-tooltip" style="position:absolute; background:rgba(0,0,0,0.85); color:white; padding:0.4rem 0.7rem; border-radius:4px; font-size:0.8rem; pointer-events:none; display:none; border:1px solid #ff6f00;"></div>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.6rem;">
+      <canvas id="sst-hero-colorbar" width="240" height="12" style="border-radius:3px;"></canvas>
+      <span id="sst-hero-cb-labels" style="font-size:0.75rem; color:#999;"></span>
+    </div>
+    <figcaption>
+      MODIS Aqua sea surface temperature across the tropical Pacific, <span id="sst-hero-date"></span> (single daily pass).
+      Dark regions are cloud-obscured gaps with no data.
+      Hover to inspect values. Data: NASA Ocean Color, Level 3 mapped daily.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    // ---- Colormap ----
+    function thermal(t) {
+      if (t < 0.25) { var s = t / 0.25; return [Math.round(s * 30), Math.round(s * 80 + 20), Math.round(120 + s * 80)]; }
+      if (t < 0.5)  { var s = (t - 0.25) / 0.25; return [Math.round(30 + s * 20), Math.round(100 + s * 155), Math.round(200 - s * 40)]; }
+      if (t < 0.75) { var s = (t - 0.5) / 0.25; return [Math.round(50 + s * 205), Math.round(255 - s * 55), Math.round(160 - s * 120)]; }
+      var s = (t - 0.75) / 0.25; return [255, Math.round(200 - s * 180), Math.round(40 - s * 40)];
+    }
+
+    var heroData = null;
+    var date = '2026-03-03';
+    async function loadHeroData() {
+      var resp = await fetch(`data/modis_sst_${date}_daily.csv`);
+      // var resp = await fetch('data/sst_pacific.csv');
+      var text = await resp.text();
+      var lines = text.trim().split('\n');
+      var lats = new Float32Array(lines.length - 1);
+      var lons = new Float32Array(lines.length - 1);
+      var ssts = new Float32Array(lines.length - 1);
+      var count = 0;
+      for (var i = 1; i < lines.length; i++) {
+        var parts = lines[i].split(',');
+        if (parts.length >= 3) {
+          lats[count] = parseFloat(parts[0]);
+          lons[count] = parseFloat(parts[1]);
+          ssts[count] = parseFloat(parts[2]);
+          count++;
+        }
+      }
+      var latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity, sstMin = Infinity, sstMax = -Infinity;
+      for (var i = 0; i < count; i++) {
+        if (lats[i] < latMin) latMin = lats[i];
+        if (lats[i] > latMax) latMax = lats[i];
+        if (lons[i] < lonMin) lonMin = lons[i];
+        if (lons[i] > lonMax) lonMax = lons[i];
+        if (ssts[i] < sstMin) sstMin = ssts[i];
+        if (ssts[i] > sstMax) sstMax = ssts[i];
+      }
+      heroData = { lats: lats, lons: lons, ssts: ssts, count: count, latMin: latMin, latMax: latMax, lonMin: lonMin, lonMax: lonMax, sstMin: sstMin, sstMax: sstMax };
+    }
+
+    function renderHero() {
+      if (!heroData) return;
+      var d = heroData;
+      var canvas = document.getElementById('sst-hero-map');
+      var container = document.getElementById('sst-hero-container');
+      var aspect = (d.lonMax - d.lonMin) / (d.latMax - d.latMin);
+      var width = container.clientWidth;
+      var height = Math.round(width / aspect);
+      var dpr = window.devicePixelRatio || 1;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = width + 'px';
+      canvas.style.height = height + 'px';
+      var ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      ctx.fillStyle = '#0a0a1a';
+      ctx.fillRect(0, 0, width, height);
+
+      // Grid lines
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+      ctx.lineWidth = 0.5;
+      for (var lon = Math.ceil(d.lonMin / 10) * 10; lon <= d.lonMax; lon += 10) {
+        var x = (lon - d.lonMin) / (d.lonMax - d.lonMin) * width;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+      }
+      for (var lat = Math.ceil(d.latMin / 5) * 5; lat <= d.latMax; lat += 5) {
+        var y = (1 - (lat - d.latMin) / (d.latMax - d.latMin)) * height;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+      }
+
+      // Labels
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '11px -apple-system, sans-serif';
+      for (var lon = Math.ceil(d.lonMin / 10) * 10; lon <= d.lonMax; lon += 10) {
+        var x = (lon - d.lonMin) / (d.lonMax - d.lonMin) * width;
+        ctx.fillText(lon + '°', x + 3, height - 4);
+      }
+      for (var lat = Math.ceil(d.latMin / 5) * 5; lat <= d.latMax; lat += 5) {
+        var y = (1 - (lat - d.latMin) / (d.latMax - d.latMin)) * height;
+        ctx.fillText(lat >= 0 ? lat + '°N' : (-lat) + '°S', 4, y - 3);
+      }
+
+      // Equator
+      var eqY = (1 - (0 - d.latMin) / (d.latMax - d.latMin)) * height;
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(0, eqY); ctx.lineTo(width, eqY); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillText('Equator', width - 55, eqY - 4);
+
+      // Data points
+      var ps = 2.5;
+      for (var i = 0; i < d.count; i++) {
+        var t = (d.ssts[i] - d.sstMin) / (d.sstMax - d.sstMin);
+        var rgb = thermal(t);
+        var x = (d.lons[i] - d.lonMin) / (d.lonMax - d.lonMin) * width;
+        var y = (1 - (d.lats[i] - d.latMin) / (d.latMax - d.latMin)) * height;
+        ctx.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+        ctx.fillRect(x - ps / 2, y - ps / 2, ps, ps);
+      }
+
+      // Colorbar
+      var cbCanvas = document.getElementById('sst-hero-colorbar');
+      var cbCtx = cbCanvas.getContext('2d');
+      for (var i = 0; i < 240; i++) {
+        var t = i / 239;
+        var rgb = thermal(t);
+        cbCtx.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+        cbCtx.fillRect(i, 0, 1, 12);
+      }
+      document.getElementById('sst-hero-cb-labels').textContent = d.sstMin.toFixed(1) + ' °C — ' + d.sstMax.toFixed(1) + ' °C';
+    }
+
+    function setupHeroTooltip() {
+      var canvas = document.getElementById('sst-hero-map');
+      var tooltip = document.getElementById('sst-hero-tooltip');
+      canvas.addEventListener('mousemove', function(e) {
+        if (!heroData) return;
+        var d = heroData;
+        var rect = canvas.getBoundingClientRect();
+        var mx = e.clientX - rect.left;
+        var my = e.clientY - rect.top;
+        var w = rect.width, h = rect.height;
+        var lonNorm = mx / w, latNorm = my / h;
+        var bestDist = Infinity, bestIdx = -1;
+        for (var i = 0; i < d.count; i++) {
+          var px = (d.lons[i] - d.lonMin) / (d.lonMax - d.lonMin);
+          var py = 1 - (d.lats[i] - d.latMin) / (d.latMax - d.latMin);
+          var dist = (px - lonNorm) * (px - lonNorm) + (py - latNorm) * (py - latNorm);
+          if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        }
+        if (bestIdx >= 0 && bestDist < 0.002) {
+          tooltip.style.display = 'block';
+          tooltip.style.left = (mx + 15) + 'px';
+          tooltip.style.top = (my - 10) + 'px';
+          var latStr = d.lats[bestIdx] >= 0 ? d.lats[bestIdx].toFixed(2) + '°N' : (-d.lats[bestIdx]).toFixed(2) + '°S';
+          tooltip.innerHTML = '<strong>' + d.ssts[bestIdx].toFixed(2) + ' °C</strong><br>' + latStr + ', ' + Math.abs(d.lons[bestIdx]).toFixed(2) + '°W';
+        } else {
+          tooltip.style.display = 'none';
+        }
+      });
+      canvas.addEventListener('mouseleave', function() { tooltip.style.display = 'none'; });
+    }
+
+    // Init
+    loadHeroData().then(function() {
+      document.getElementById('sst-hero-loading').style.display = 'none';
+      // Format date nicely: "2026-03-03" -> "March 3, 2026"
+      var parts = date.split('-');
+      var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      var pretty = months[parseInt(parts[1]) - 1] + ' ' + parseInt(parts[2]) + ', ' + parts[0];
+      document.getElementById('sst-hero-date').textContent = pretty;
+      renderHero();
+      setupHeroTooltip();
+      window.addEventListener('resize', renderHero);
+    });
+  })();
+  </script>
+
+  <!-- ======================== COMBINED DEMO: ALL THREE SLIDERS ======================== -->
+
+
+  <figure class="l-body-outset">
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px; padding:0 65px;">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:13px; width:220px; white-space:nowrap;">Lengthscale (&#x2113;):
+          <strong><span id="all-ls-value">3.0</span>&deg;</strong></span>
+        <input type="range" id="all-ls" min="0.3" max="12" step="0.1" value="3.0"
+               style="flex:1; height:6px; cursor:pointer;">
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:13px; width:220px; white-space:nowrap;">Signal variance (&sigma;&sup2;<sub>f</sub>):
+          <strong><span id="all-sv-value">1.00</span></strong></span>
+        <input type="range" id="all-sv" min="0.05" max="5" step="0.05" value="1.0"
+               style="flex:1; height:6px; cursor:pointer;">
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:13px; width:220px; white-space:nowrap;">Noise variance (&sigma;&sup2;<sub>n</sub>):
+          <strong><span id="all-nv-value">0.150</span></strong></span>
+        <input type="range" id="all-nv" min="0.001" max="3.0" step="0.01" value="0.15"
+               style="flex:1; height:6px; cursor:pointer;">
+      </div>
+    </div>
+    <div id="all-1d-plot" style="width:100%; height:400px;"></div>
+    <!-- 2D canvases commented out for now
+    <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:10px;">
+      <div style="position:relative;"><canvas id="all-2d-mean" style="border:1px solid #ddd;"></canvas></div>
+      <div style="position:relative;"><canvas id="all-2d-std" style="border:1px solid #ddd;"></canvas></div>
+    </div>
+    -->
+    <figcaption>
+      Combined hyperparameter explorer. Adjust any slider to see the effect on the GP fit.
+    </figcaption>
+  </figure>
+
+  <!-- ======================== INTRODUCTION ======================== -->
+  <h2>Introduction</h2>
+  <p>
+    Understanding the distribution and variability of sea surface temperature (SST) across the Pacific Ocean
+    is fundamental to climate science, weather prediction, and ocean ecology. 
+    <!-- something about pattern effect, convection, clouds -->
+  </p>
+  <p>
+    This is where <strong>spatial interpolation</strong> becomes essential. Given sparse,
+    noisy observations of SST at discrete locations, we need methods that can estimate temperature at unobserved
+    locations <em>and quantify the uncertainty in those estimates</em>. 
+  </p>
+  <p>
+    Gaussian Processes (GPs) are a powerful class of models that treat the unknown SST field as a continuous
+    random function. They encode prior beliefs about smoothness and spatial correlation through covariance
+    functions, then condition these beliefs on observed data to produce predictions with quantified uncertainty. 
+    The mathematical formulation for Gaussian Process Regression is identical to Optimal Interpolation, a popular
+    interpolation method in Earth sciences. This tutorial will walk you through the theory and practice of using GPs 
+    for interpolation, with interactive visualizations showing how each component affects the final predictions.
+  </p>
+
+  <!-- ======================== THE PROBLEM ======================== -->
+  <h2>The Spatial Interpolation Problem</h2>
+  <p>
+    Imagine you are tasked with reconstructing the temperature field across the entire Pacific Ocean. 
+    You have temperature observations <d-math>y_1, y_2, \ldots, y_n</d-math>
+    at <d-math>n</d-math> locations <d-math>\mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n</d-math>,
+    where each location is a 2D coordinate (latitude, longitude). Your goal is to
+    estimate the temperature function <d-math>f(\mathbf{x})</d-math> everywhere across the ocean,
+    accounting for:
+  </p>
+  <ul>
+    <li><strong>Spatial correlation:</strong> Nearby locations tend to have similar temperatures due to ocean
+    currents, heat transport, and mixing</li>
+    <li><strong>Measurement noise:</strong> Instruments have error, and satellite measurements can be affected
+    by clouds and calibration issues</li>
+    <li><strong>Incomplete data:</strong> We have observations only at specific points; large regions have no data</li>
+    <li><strong>Uncertainty quantification:</strong> We need not just point estimates but confidence intervals or
+    full probability distributions</li>
+  </ul>
+
+  <figure class="l-body-outset">
+    <div id="obs-plot" style="width:100%; height:400px;"></div>
+    <figcaption>
+      SST observations at 6&deg;N (MODIS Aqua, March 3 2026). Each dot is one satellite measurement.
+      The gaps are where clouds blocked the sensor. 143 observations out of a possible ~480 grid points.
+    </figcaption>
+  </figure>
+
+  <p>
+    The same effect is visible in 2D. Below are raw satellite observations in a
+    small subdomain (1&ndash;6&deg;N, 133&ndash;128&deg;W). About half the grid cells are missing
+    due to cloud cover.
+  </p>
+
+  <figure class="l-body-outset">
+    <div style="position:relative;">
+      <canvas id="obs2d-canvas" style="display:block; width:100%; max-width:500px; margin:0 auto; border:1px solid #ddd;"></canvas>
+    </div>
+    <figcaption>
+      Raw MODIS SST observations (0.5&deg; bins, March 4 2026). 62 of 121 grid cells have data (~51%).
+      Dark cells are where clouds blocked the satellite&mdash;the GP will fill these in.
+    </figcaption>
+  </figure>
+
+  <script>
+  // Real MODIS SST at 6.0208°N (single MODIS grid row), March 3 2026 — 143 points with natural cloud gaps
+  var sstObs = [
+    [-139.8542,26.6500],[-139.8125,26.3450],[-139.7708,26.7300],[-139.7292,26.3800],
+    [-139.6875,26.2050],[-139.6458,26.2700],[-139.6042,26.2300],[-139.5625,26.2800],
+    [-139.5208,26.5550],[-139.4792,26.5700],[-139.4375,26.6300],[-139.3958,26.8100],
+    [-139.3542,26.9000],[-139.3125,26.9500],[-139.2708,26.3450],[-139.2292,26.0100],
+    [-139.1875,26.0100],[-139.1458,26.1600],[-139.1042,26.3050],[-139.0625,26.6550],
+    [-139.0208,26.6750],[-138.9792,26.6900],
+    [-137.3125,27.1900],[-137.2708,27.0900],[-137.2292,27.0450],[-137.1875,27.2150],
+    [-137.1458,27.2400],[-137.1042,27.3400],[-137.0625,27.2600],[-137.0208,27.2600],
+    [-136.9792,27.0050],[-136.9375,26.8350],[-136.8958,26.9300],[-136.8542,26.9650],
+    [-136.8125,27.0050],[-136.7708,27.1800],[-136.6458,26.8500],[-136.6042,27.3050],
+    [-136.5625,27.3000],[-136.5208,27.3150],[-136.4792,27.3350],[-136.4375,27.2000],
+    [-136.3958,27.5300],[-136.3542,27.6400],[-136.3125,27.5700],[-136.2708,27.5750],
+    [-136.2292,27.4400],[-136.1875,26.5900],[-136.1458,27.2250],[-136.1042,27.5050],
+    [-136.0625,27.3850],[-136.0208,27.1600],[-135.9792,27.0050],[-135.9375,27.1900],
+    [-135.8958,27.2000],[-135.8542,27.2900],[-135.8125,27.4350],[-135.7708,27.3250],
+    [-135.7292,27.1050],[-135.6875,27.1600],[-135.6458,27.1100],
+    [-134.8958,26.7250],[-134.8542,26.7250],[-134.6042,25.4250],[-134.5625,25.4750],
+    [-134.5208,25.4800],[-134.4792,27.3650],[-134.4375,27.3150],[-134.3958,27.1650],
+    [-134.3542,27.1250],[-134.3125,27.1200],[-134.2708,25.8250],[-134.2292,25.4550],
+    [-134.1875,26.3750],[-134.1458,26.3750],
+    [-132.0625,25.8850],[-132.0208,25.8700],[-131.9792,25.5300],[-131.9375,25.8550],
+    [-131.8958,25.7900],[-131.8542,25.5350],[-131.8125,24.8950],
+    [-130.5208,25.9300],[-130.4792,25.9450],[-130.4375,25.9250],[-130.3958,25.8200],
+    [-130.3542,25.8300],[-130.3125,25.2050],
+    [-129.7292,26.1850],[-129.6875,26.1850],[-129.5625,26.7050],[-129.5208,26.7050],
+    [-129.3958,26.3050],[-129.3542,26.3050],[-129.2708,26.7750],[-129.2292,26.7750],
+    [-129.1042,27.3550],[-129.0625,27.3650],[-129.0208,27.3850],[-128.9792,27.0450],
+    [-128.9375,27.5400],[-128.8958,27.5200],[-128.8542,27.4550],[-128.8125,27.4350],
+    [-128.7708,27.2500],[-128.7292,27.5100],[-128.6875,27.5150],[-128.6458,27.4400],
+    [-128.6042,27.4950],[-128.5625,27.4150],[-128.5208,27.4100],[-128.4792,27.4400],
+    [-128.4375,27.4500],[-128.3958,27.4000],[-128.3542,27.3500],[-128.3125,27.5950],
+    [-128.2708,27.5450],[-128.2292,27.5750],[-128.1875,27.5750],[-128.1458,27.5400],
+    [-128.1042,27.4600],[-128.0625,27.4100],[-128.0208,27.4000],
+    [-127.9375,27.5200],[-127.8958,27.5200],[-127.8542,27.5500],[-127.8125,27.2050],
+    [-127.7708,27.2050],[-127.7292,27.4950],
+    [-127.0625,27.2400],[-127.0208,27.3750],[-126.9792,27.3850],[-126.9375,27.5000],
+    [-126.8958,27.5350],
+    [-125.3125,27.3700],[-125.2708,27.5050],[-125.2292,27.5400],[-125.1875,27.1200],
+    [-123.7708,27.0650],[-123.7292,27.0350],[-123.6875,27.0350],[-123.6458,27.2500],
+    [-123.6042,27.2500]
+  ];
+
+  // Shared helpers for 1D plots
+  function makeAxes(divId, title) {
+    var div = document.getElementById(divId);
+    var W = div.clientWidth || 700, H = 400;
+    var svg = d3.select(div).append('svg').attr('width', W).attr('height', H);
+    var m = {top: 30, right: 25, bottom: 50, left: 65};
+    var w = W - m.left - m.right, h = H - m.top - m.bottom;
+    var g = svg.append('g').attr('transform', 'translate(' + m.left + ',' + m.top + ')');
+
+    var xScale = d3.scaleLinear().domain([-140.5, -123]).range([0, w]);
+    var yScale = d3.scaleLinear().domain([24, 28.5]).range([h, 0]);
+
+    g.append('g').call(d3.axisBottom(xScale).ticks(8).tickSize(-h).tickFormat(''))
+      .attr('transform', 'translate(0,' + h + ')').selectAll('line').attr('stroke', '#eee');
+    g.append('g').call(d3.axisLeft(yScale).ticks(6).tickSize(-w).tickFormat(''))
+      .selectAll('line').attr('stroke', '#eee');
+    g.selectAll('.domain').attr('stroke', 'none');
+
+    g.append('g').attr('transform', 'translate(0,' + h + ')')
+      .call(d3.axisBottom(xScale).ticks(8).tickFormat(function(d) { return Math.abs(d) + '\u00B0W'; }));
+    g.append('g').call(d3.axisLeft(yScale).ticks(6).tickFormat(function(d) { return d.toFixed(1) + '\u00B0C'; }));
+
+    g.append('text').attr('x', w/2).attr('y', h + 40).attr('text-anchor', 'middle')
+      .style('font-size', '13px').style('fill', '#555').text('Longitude');
+    g.append('text').attr('transform', 'rotate(-90)').attr('x', -h/2).attr('y', -50)
+      .attr('text-anchor', 'middle').style('font-size', '13px').style('fill', '#555')
+      .text('SST (\u00B0C)');
+    if (title) {
+      g.append('text').attr('x', w/2).attr('y', -10).attr('text-anchor', 'middle')
+        .style('font-size', '14px').style('fill', '#333').text(title);
+    }
+    return {g: g, xScale: xScale, yScale: yScale, w: w, h: h};
+  }
+
+  function plotDots(g, xScale, yScale, obs, opts) {
+    opts = opts || {};
+    g.selectAll('.obs-dot').data(obs).enter().append('circle')
+      .attr('class', 'obs-dot')
+      .attr('cx', function(d) { return xScale(d[0]); })
+      .attr('cy', function(d) { return yScale(d[1]); })
+      .attr('r', opts.r || 4).attr('fill', opts.fill || '#333')
+      .attr('stroke', opts.stroke || 'white').attr('stroke-width', opts.sw || 1.2);
+  }
+
+  // ---- Draw the observations ----
+  (function() {
+    var ctx = makeAxes('obs-plot', 'MODIS SST at 6\u00B0N \u2014 March 3, 2026');
+    plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+  })();
+  </script>
+
+  <p>
+    Traditional approaches might use simple nearest-neighbor or linear interpolation. But Gaussian Processes
+    offer a more principled approach: they model <d-math>f(\mathbf{x})</d-math> as a random function
+    from which our observations are drawn (possibly with noise), allowing us to compute posterior distributions over
+    temperature fields given the data we do have.
+  </p>
+
+  <!-- ======================== MEAN AND COVARIANCE ======================== -->
+  <h2>Mean and Covariance Functions</h2>
+  <p>
+    A Gaussian Process is completely defined by two functions: a mean function
+    <d-math>m(\mathbf{x})</d-math> and a covariance function (or <em>kernel</em>)
+    <d-math>k(\mathbf{x}, \mathbf{x}')</d-math>. We write:
+  </p>
+
+  <d-math block>
+    f(\mathbf{x}) \sim \mathcal{GP}\bigl(m(\mathbf{x}),\, k(\mathbf{x}, \mathbf{x}')\bigr)
+    \tag{1}
+  </d-math>
+
+  <p>
+    The mean function captures the overall trend in SST. For the Pacific, this might be a simple north-south
+    gradient (warmer near the equator) or a more complex pattern obtained from a model or climatology 
+    reflecting seasonal climate. The covariance function encodes how strongly temperatures at different 
+    locations are related.
+  </p>
+
+  <p>
+    For SST, the covariance function should reflect physical intuition:
+  </p>
+  <ul>
+    <li><strong>Nearby locations are highly correlated:</strong> <d-math>k(\mathbf{x}, \mathbf{x}')</d-math>
+    should be large when <d-math>|\mathbf{x} - \mathbf{x}'|</d-math> is small</li>
+    <li><strong>Distant locations are weakly correlated:</strong> <d-math>k(\mathbf{x}, \mathbf{x}')</d-math>
+    should decay to zero as distance increases</li>
+    <li><strong>Self-covariance equals variance:</strong> <d-math>k(\mathbf{x}, \mathbf{x}) = \sigma_f^2</d-math>,
+    the marginal variance of temperature</li>
+  </ul>
+
+  <aside>
+    <strong>Physical insight:</strong> SST correlation scales vary with ocean dynamics&mdash;decaying
+    over 100&ndash;500&nbsp;km in the tropics but persisting over 1000+&nbsp;km in mid-latitudes
+    where large-scale eddies and gyres dominate.
+  </aside>
+
+  <!-- ======================== COVARIANCE FUNCTIONS ======================== -->
+  <h2>Covariance Functions and Hyperparameters</h2>
+  <p>
+    We parametrize our covariance function using a few interpretable hyperparameters. The most common choice
+    is the Radial Basis Function (RBF) kernel, also called squared exponential:
+  </p>
+
+  <d-math block>
+    k(\mathbf{x}, \mathbf{x}') = \sigma_f^2 \exp\!\left(-\frac{\|\mathbf{x} - \mathbf{x}'\|^2}{2\ell^2}\right)
+    \tag{2}
+  </d-math>
+
+  <figure class="l-body-outset" style="max-width:65%; margin-left:auto; margin-right:auto;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 20px;">
+      <span style="font-size:14px; white-space:nowrap;">Lengthscale (&#x2113;):
+        <strong><span id="rbf-ls-value">2.0</span>&deg;</strong>
+      </span>
+      <input type="range" id="rbf-ls-slider" min="0.3" max="10" step="0.1" value="2.0"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div id="rbf-kernel-plot" style="width:100%; height:300px;"></div>
+    <figcaption>
+      The RBF (squared exponential) covariance function
+      <d-math>k(r) = \sigma_f^2 \exp(-r^2 / 2\ell^2)</d-math>
+      as a function of distance <d-math>r</d-math>. A small lengthscale means correlation
+      drops off quickly (nearby points are nearly independent). A large lengthscale means
+      correlation persists over long distances (distant points still inform each other).
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    // Draw RBF kernel for multiple lengthscales as faded traces, current one highlighted
+    var traceLS = [0.5, 1, 2, 3, 5, 8];
+    var traceColors = ['#adb5bd','#adb5bd','#adb5bd','#adb5bd','#adb5bd','#adb5bd'];
+
+    function drawKernel(currentLS) {
+      var div = document.getElementById('rbf-kernel-plot');
+      div.innerHTML = '';
+      var W = div.clientWidth || 500, H = 300;
+      var svg = d3.select(div).append('svg').attr('width', W).attr('height', H);
+      var m = {top: 25, right: 25, bottom: 50, left: 65};
+      var w = W - m.left - m.right, h = H - m.top - m.bottom;
+      var g = svg.append('g').attr('transform', 'translate(' + m.left + ',' + m.top + ')');
+
+      var xScale = d3.scaleLinear().domain([0, 15]).range([0, w]);
+      var yScale = d3.scaleLinear().domain([0, 1.1]).range([h, 0]);
+
+      // Grid
+      g.append('g').call(d3.axisBottom(xScale).ticks(8).tickSize(-h).tickFormat(''))
+        .attr('transform', 'translate(0,' + h + ')').selectAll('line').attr('stroke', '#eee');
+      g.append('g').call(d3.axisLeft(yScale).ticks(6).tickSize(-w).tickFormat(''))
+        .selectAll('line').attr('stroke', '#eee');
+      g.selectAll('.domain').attr('stroke', 'none');
+
+      // Axes
+      g.append('g').attr('transform', 'translate(0,' + h + ')')
+        .call(d3.axisBottom(xScale).ticks(8).tickFormat(function(d) { return d + '\u00B0'; }));
+      g.append('g').call(d3.axisLeft(yScale).ticks(6).tickFormat(function(d) { return d.toFixed(1); }));
+
+      g.append('text').attr('x', w/2).attr('y', h + 40).attr('text-anchor', 'middle')
+        .style('font-size', '13px').style('fill', '#555').text('Distance r (\u00B0)');
+      g.append('text').attr('transform', 'rotate(-90)').attr('x', -h/2).attr('y', -50)
+        .attr('text-anchor', 'middle').style('font-size', '13px').style('fill', '#555')
+        .text('k(r)');
+
+      // Generate points
+      var nPts = 300;
+      function rbfCurve(ls) {
+        var pts = [];
+        for (var i = 0; i <= nPts; i++) {
+          var r = 15 * i / nPts;
+          pts.push({x: r, y: Math.exp(-0.5 * r * r / (ls * ls))});
+        }
+        return pts;
+      }
+
+      var line = d3.line()
+        .x(function(d) { return xScale(d.x); })
+        .y(function(d) { return yScale(d.y); });
+
+      // Draw faint traces for reference lengthscales
+      traceLS.forEach(function(ls) {
+        g.append('path').datum(rbfCurve(ls)).attr('d', line)
+          .attr('fill', 'none').attr('stroke', '#ddd').attr('stroke-width', 1.2)
+          .attr('stroke-dasharray', '4,3');
+        // Label at right edge
+        var yEnd = Math.exp(-0.5 * 15 * 15 / (ls * ls));
+        if (yEnd > 0.01) {
+          g.append('text').attr('x', w + 3).attr('y', yScale(yEnd))
+            .style('font-size', '9px').style('fill', '#bbb').text('\u2113=' + ls);
+        }
+      });
+
+      // Draw current lengthscale highlighted
+      g.append('path').datum(rbfCurve(currentLS)).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 3);
+
+      // Shade area under curve
+      var area = d3.area()
+        .x(function(d) { return xScale(d.x); })
+        .y0(h)
+        .y1(function(d) { return yScale(d.y); });
+      g.append('path').datum(rbfCurve(currentLS)).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.12);
+
+      // Mark the "effective range" (~2*ell where k drops to ~0.135)
+      var effRange = 2 * currentLS;
+      if (effRange < 15) {
+        var kAtRange = Math.exp(-0.5 * effRange * effRange / (currentLS * currentLS));
+        g.append('line')
+          .attr('x1', xScale(effRange)).attr('x2', xScale(effRange))
+          .attr('y1', yScale(0)).attr('y2', yScale(kAtRange))
+          .attr('stroke', '#e03131').attr('stroke-width', 1.5).attr('stroke-dasharray', '5,3');
+        g.append('text').attr('x', xScale(effRange) + 4).attr('y', yScale(kAtRange / 2))
+          .style('font-size', '11px').style('fill', '#e03131')
+          .text('2\u2113 = ' + (effRange).toFixed(1) + '\u00B0');
+      }
+
+      // Title
+      g.append('text').attr('x', w/2).attr('y', -8).attr('text-anchor', 'middle')
+        .style('font-size', '14px').style('fill', '#333')
+        .text('RBF Kernel \u2014 \u2113 = ' + currentLS.toFixed(1) + '\u00B0');
+    }
+
+    var slider = document.getElementById('rbf-ls-slider');
+    var label = document.getElementById('rbf-ls-value');
+    slider.addEventListener('input', function() {
+      var ls = parseFloat(slider.value);
+      label.textContent = ls.toFixed(1);
+      drawKernel(ls);
+    });
+    drawKernel(2.0);
+  })();
+  </script>
+
+  <p>
+    This visualization makes physical sense: if you know the temperature at one ocean location,
+    nearby points are highly correlated (high <d-math>k</d-math>) so you can confidently predict them.
+    Distant points contribute less information. The red dashed line marks <d-math>2\ell</d-math>,
+    where the kernel has dropped to about 13% of its peak&mdash;beyond this distance, correlation is weak.
+  </p>
+
+  <p>
+    In oceanography, SST correlation structure is governed by local mixing and heating (short range),
+    ocean currents that transport water masses over 100s&ndash;1000s of km (medium range), and large-scale
+    circulation patterns that set background temperature gradients (long range). A single lengthscale is
+    a simplification, but it demonstrates the key principles.
+  </p>
+
+  <p>
+    This kernel decreases smoothly with distance <d-math>r = |\mathbf{x} - \mathbf{x}'|</d-math>.
+    Three hyperparameters control the kernel's behavior:
+  </p>
+  <ul>
+    <li><strong>Signal variance</strong> <d-math>\sigma_f^2</d-math>: The overall amplitude of
+    SST fluctuations. Large <d-math>\sigma_f^2</d-math> means temperature varies dramatically across the ocean;
+    small <d-math>\sigma_f^2</d-math> means it's relatively uniform.</li>
+    <li><strong>Lengthscale</strong> <d-math>\ell</d-math>: The characteristic distance over which
+    correlation decays. Small <d-math>\ell</d-math> means nearby locations are quickly decorrelated;
+    large <d-math>\ell</d-math> means correlation persists over long distances.</li>
+    <li><strong>Noise variance</strong> <d-math>\sigma_n^2</d-math>: Measurement uncertainty and
+    small-scale variability we don't model. Larger <d-math>\sigma_n^2</d-math> means we trust observations less.</li>
+  </ul>
+
+  <p>
+    Combining the RBF kernel (Eq. 2) with additive Gaussian noise
+    <d-math>\varepsilon \sim \mathcal{N}(0, \sigma_n^2)</d-math>,
+    the full covariance between any two observations
+    <d-math>y_i = f(\mathbf{x}_i) + \varepsilon_i</d-math> and
+    <d-math>y_j = f(\mathbf{x}_j) + \varepsilon_j</d-math> is:
+  </p>
+
+  <d-math block>
+    \operatorname{cov}(y_i, y_j)
+      = \underbrace{\sigma_f^2 \exp\!\left(-\frac{\|\mathbf{x}_i - \mathbf{x}_j\|^2}{2\ell^2}\right)}_{\text{RBF kernel } k(\mathbf{x}_i, \mathbf{x}_j)}
+      + \;\underbrace{\sigma_n^2 \,\delta_{ij}}_{\text{noise}}
+  </d-math>
+
+  <p>
+    where <d-math>\delta_{ij} = 1</d-math> if <d-math>i = j</d-math> and 0 otherwise. The noise term
+    only appears on the diagonal&mdash;each observation has its own independent measurement error, but the
+    underlying function is smooth.
+  </p>
+
+  <aside>
+    <strong>Alternative kernels:</strong> The Mat&eacute;rn kernel is sometimes preferred for natural phenomena because it
+    allows finer control over smoothness. SST fields are smooth but not infinitely smooth, making Mat&eacute;rn a natural
+    choice in practice. For this tutorial, we focus on RBF for clarity.
+  </aside>
+
+  <p>
+    Given observations <d-math>\mathbf{y} = (y_1, \ldots, y_n)^\top</d-math> at locations
+    <d-math>\mathbf{X} = (\mathbf{x}_1, \ldots, \mathbf{x}_n)</d-math>, the Gaussian Process model is:
+  </p>
+
+  <d-math block>
+    \mathbf{y} = \mathbf{f} + \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0},\, \sigma_n^2 \mathbf{I})
+    \tag{3}
+  </d-math>
+
+  <p>
+    The observations are modeled as the true function plus independent Gaussian noise. The covariance matrix
+    <d-math>\mathbf{K}</d-math> captures correlations between all pairs of observed locations,
+    and <d-math>\sigma_n^2 \mathbf{I}</d-math> accounts for measurement noise.
+  </p>
+
+  <p>
+    To see what this looks like in practice, let's apply a GP to our 1D SST cross-section from
+    earlier. The standard approach is to first remove the mean from the observations, fit
+    the GP to the residuals (anomalies), then add the mean back to the predictions.
+  </p>
+
+  <figure class="l-body-outset">
+    <div id="gp-fit-plot" style="width:100%; height:400px;"></div>
+    <figcaption>
+      GP regression fit (<d-math>\ell</d-math> = 3&deg;, <d-math>\sigma_f^2</d-math> = 1.0, <d-math>\sigma_n^2</d-math> = 0.15).
+      The mean SST is removed before fitting and added back to the predictions.
+      The blue line is the posterior mean; the shaded band shows &plusmn;2&sigma; uncertainty.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var ctx = makeAxes('gp-fit-plot', 'GP fit \u2014 \u2113 = 3.0\u00B0, \u03C3\u00B2f = 1.0, \u03C3\u00B2n = 0.15');
+
+    function rbf(x1, x2, ls, sv) {
+      var d = x1 - x2;
+      return sv * Math.exp(-0.5 * d * d / (ls * ls));
+    }
+
+    var obsX = sstObs.map(function(d) { return d[0]; });
+    var obsY = sstObs.map(function(d) { return d[1]; });
+    var n = obsX.length;
+    var ls = 3.0, sv = 1.0, nv = 0.15;
+
+    // Remove mean
+    var meanY = 0;
+    for (var i = 0; i < n; i++) meanY += obsY[i];
+    meanY /= n;
+    var residuals = obsY.map(function(y) { return y - meanY; });
+
+    // Build K + noise on residuals
+    var K = [];
+    for (var i = 0; i < n; i++) {
+      K[i] = [];
+      for (var j = 0; j < n; j++) {
+        K[i][j] = rbf(obsX[i], obsX[j], ls, sv);
+        if (i === j) K[i][j] += nv + 1e-6;
+      }
+    }
+    var Kinv = numeric.inv(K);
+    var alpha = numeric.dot(Kinv, residuals);
+
+    // Dense test points across full domain
+    var testX = [];
+    for (var t = 0; t < 400; t++) testX.push(-140.5 + t * (17.5 / 399));
+
+    var mean = [], upper = [], lower = [];
+    for (var t = 0; t < testX.length; t++) {
+      var kStar = [];
+      for (var i = 0; i < n; i++) kStar.push(rbf(testX[t], obsX[i], ls, sv));
+      var mu = numeric.dot(kStar, alpha);
+      var v = numeric.dot(Kinv, kStar);
+      var variance = Math.max(0, sv - numeric.dot(kStar, v));
+      var std = Math.sqrt(variance);
+      // Add mean back
+      mean.push(mu + meanY);
+      upper.push(mu + meanY + 2 * std);
+      lower.push(mu + meanY - 2 * std);
+    }
+
+    // ±2σ band
+    var bandData = testX.map(function(x, i) { return {x: x, lo: lower[i], hi: upper[i]}; });
+    var area = d3.area()
+      .x(function(d) { return ctx.xScale(d.x); })
+      .y0(function(d) { return ctx.yScale(d.lo); })
+      .y1(function(d) { return ctx.yScale(d.hi); });
+    ctx.g.append('path').datum(bandData).attr('d', area)
+      .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+    // ±1σ band
+    var inner = testX.map(function(x, i) {
+      var s1 = (upper[i] - mean[i]) / 2;
+      return {x: x, lo: mean[i] - s1, hi: mean[i] + s1};
+    });
+    ctx.g.append('path').datum(inner).attr('d', area)
+      .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+    // Mean line
+    var line = d3.line()
+      .x(function(d, i) { return ctx.xScale(testX[i]); })
+      .y(function(d) { return ctx.yScale(d); });
+    ctx.g.append('path').datum(mean).attr('d', line)
+      .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 2.5);
+
+    // Observation dots on top
+    plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+
+    // Show mean line as dashed
+    ctx.g.append('line')
+      .attr('x1', 0).attr('x2', ctx.w)
+      .attr('y1', ctx.yScale(meanY)).attr('y2', ctx.yScale(meanY))
+      .attr('stroke', '#999').attr('stroke-width', 1).attr('stroke-dasharray', '6,4');
+    ctx.g.append('text')
+      .attr('x', ctx.w - 5).attr('y', ctx.yScale(meanY) - 6)
+      .attr('text-anchor', 'end').style('font-size', '11px').style('fill', '#999')
+      .text('mean = ' + meanY.toFixed(2) + '\u00B0C');
+  })();
+  </script>
+
+  <p>
+    Notice how the uncertainty band widens in the cloud gaps and narrows where observations are dense.
+    In the gaps, the GP prediction reverts toward the mean (the dashed line) because there is no
+    nearby data to constrain it. Next, we'll explore how changing the hyperparameters affects this fit.
+  </p>
+
+  <!-- ======================== SPATIAL CORRELATION ======================== -->
+
+  <!-- ======================== LENGTHSCALE INTERACTIVE ======================== -->
+  <h2>The Lengthscale Parameter</h2>
+  <p>
+    The lengthscale <d-math>\ell</d-math> controls
+    the spatial range of correlations in SST. A small lengthscale means the GP treats nearby
+    observations as nearly independent&mdash;the fit is rough and wiggly. A large lengthscale
+    means distant observations still inform each other&mdash;the fit becomes smooth.
+  </p>
+  <p>
+    Drag the slider to see how the lengthscale changes the interpolation of the same data:
+  </p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 65px;">
+      <span style="font-size:14px; white-space:nowrap;">Lengthscale (&#x2113;):
+        <strong><span id="ls-slider-value">3.0</span>&deg;</strong>
+      </span>
+      <input type="range" id="ls-slider" min="0.3" max="12" step="0.1" value="3.0"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div id="ls-interactive-plot" style="width:100%; height:400px;"></div>
+    <figcaption>
+      Drag the slider. With small <d-math>\ell</d-math> (&lt;1&deg;), the GP treats each cluster of observations independently
+      and uncertainty explodes in gaps. With large <d-math>\ell</d-math> (&gt;8&deg;), information spreads widely and the fit
+      becomes a smooth trend.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var obsX = sstObs.map(function(d) { return d[0]; });
+    var obsY = sstObs.map(function(d) { return d[1]; });
+    var n = obsX.length;
+
+    // Precompute mean
+    var meanY = 0;
+    for (var i = 0; i < n; i++) meanY += obsY[i];
+    meanY /= n;
+    var residuals = obsY.map(function(y) { return y - meanY; });
+
+    // Dense test points
+    var testX = [];
+    for (var t = 0; t < 400; t++) testX.push(-140.5 + t * (17.5 / 399));
+
+    function rbf(x1, x2, ls, sv) {
+      var d = x1 - x2;
+      return sv * Math.exp(-0.5 * d * d / (ls * ls));
+    }
+
+    function drawGP(ls) {
+      var sv = 1.0, nv = 0.15;
+
+      // Build K
+      var K = [];
+      for (var i = 0; i < n; i++) {
+        K[i] = [];
+        for (var j = 0; j < n; j++) {
+          K[i][j] = rbf(obsX[i], obsX[j], ls, sv);
+          if (i === j) K[i][j] += nv + 1e-6;
+        }
+      }
+      var Kinv = numeric.inv(K);
+      var alpha = numeric.dot(Kinv, residuals);
+
+      var mean = [], upper = [], lower = [];
+      for (var t = 0; t < testX.length; t++) {
+        var kStar = [];
+        for (var i = 0; i < n; i++) kStar.push(rbf(testX[t], obsX[i], ls, sv));
+        var mu = numeric.dot(kStar, alpha);
+        var v = numeric.dot(Kinv, kStar);
+        var variance = Math.max(0, sv - numeric.dot(kStar, v));
+        var std = Math.sqrt(variance);
+        mean.push(mu + meanY);
+        upper.push(mu + meanY + 2 * std);
+        lower.push(mu + meanY - 2 * std);
+      }
+
+      // Clear and redraw
+      var div = document.getElementById('ls-interactive-plot');
+      div.innerHTML = '';
+      var ctx = makeAxes('ls-interactive-plot',
+        'GP fit \u2014 \u2113 = ' + ls.toFixed(1) + '\u00B0  (\u03C3\u00B2f = 1.0, \u03C3\u00B2n = 0.15)');
+
+      // ±2σ band
+      var bandData = testX.map(function(x, i) { return {x: x, lo: lower[i], hi: upper[i]}; });
+      var area = d3.area()
+        .x(function(d) { return ctx.xScale(d.x); })
+        .y0(function(d) { return ctx.yScale(d.lo); })
+        .y1(function(d) { return ctx.yScale(d.hi); });
+      ctx.g.append('path').datum(bandData).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      // ±1σ band
+      var inner = testX.map(function(x, i) {
+        var s1 = (upper[i] - mean[i]) / 2;
+        return {x: x, lo: mean[i] - s1, hi: mean[i] + s1};
+      });
+      ctx.g.append('path').datum(inner).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      // Mean line
+      var line = d3.line()
+        .x(function(d, i) { return ctx.xScale(testX[i]); })
+        .y(function(d) { return ctx.yScale(d); });
+      ctx.g.append('path').datum(mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 2.5);
+
+      // Dots on top
+      plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+
+      // Dashed mean line
+      ctx.g.append('line')
+        .attr('x1', 0).attr('x2', ctx.w)
+        .attr('y1', ctx.yScale(meanY)).attr('y2', ctx.yScale(meanY))
+        .attr('stroke', '#999').attr('stroke-width', 1).attr('stroke-dasharray', '6,4');
+    }
+
+    // Wire up slider
+    var slider = document.getElementById('ls-slider');
+    var label = document.getElementById('ls-slider-value');
+    slider.addEventListener('input', function() {
+      label.textContent = parseFloat(this.value).toFixed(1);
+      drawGP(parseFloat(this.value));
+    });
+
+    // Initial draw
+    drawGP(3.0);
+  })();
+  </script>
+
+  <p>
+    Notice that with a very small lengthscale (&lt;1&deg;), the GP essentially memorizes each cluster
+    of observations but knows nothing about the gaps&mdash;uncertainty explodes between data clusters.
+    With a very large lengthscale (&gt;8&deg;), distant observations constrain each other and the fit
+    becomes a gentle curve, but it can no longer capture local features.
+  </p>
+
+  <p>
+    The 2D lengthscale slider below shows the same effect in the subdomain. Drag to see how
+    the GP fills in the cloud gaps:
+  </p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 10px;">
+      <span style="font-size:14px; white-space:nowrap;">Lengthscale (&#x2113;):
+        <strong><span id="ls2d-slider-value">3.0</span>&deg;</strong>
+      </span>
+      <input type="range" id="ls2d-slider" min="0.3" max="8" step="0.1" value="3.0"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+      <div style="position:relative;"><canvas id="ls2d-mean" style="border:1px solid #ddd;"></canvas></div>
+      <div style="position:relative;"><canvas id="ls2d-std" style="border:1px solid #ddd;"></canvas></div>
+    </div>
+    <figcaption>
+      2D GP interpolation. Small lengthscale produces a patchy field; large lengthscale
+      produces a smooth gradient. Black dots mark observation locations.
+    </figcaption>
+  </figure>
+
+  <script>
+  // 2D observation data: real MODIS SST, 1-6°N, 133W-128W, March 4 2026
+  // Each entry is the mean of all MODIS pixels (~50 per cell) in a 0.5° bin
+  // 62 of 121 grid cells have data (~51% coverage) — cloud gaps in the north
+  var sstObs2d = [
+    [1.0,-133.0,26.298],[1.0,-132.5,26.174],[1.0,-132.0,25.964],[1.0,-131.5,26.181],[1.0,-131.0,26.189],[1.0,-130.5,26.323],[1.0,-130.0,26.35],[1.0,-129.5,26.537],[1.0,-129.0,26.491],[1.0,-128.5,26.603],[1.0,-128.0,26.679],
+    [1.5,-133.0,26.295],[1.5,-132.5,26.244],[1.5,-132.0,26.325],[1.5,-131.5,26.485],[1.5,-131.0,26.495],[1.5,-130.5,26.564],[1.5,-130.0,26.663],[1.5,-129.5,26.697],[1.5,-129.0,26.661],[1.5,-128.5,26.521],[1.5,-128.0,26.63],
+    [2.0,-133.0,26.406],[2.0,-132.5,26.529],[2.0,-132.0,26.418],[2.0,-131.5,26.626],[2.0,-130.5,26.468],[2.0,-130.0,26.754],[2.0,-129.5,26.799],[2.0,-129.0,26.642],[2.0,-128.5,26.713],
+    [2.5,-133.0,26.3],[2.5,-132.5,26.604],[2.5,-132.0,26.62],[2.5,-131.0,26.17],[2.5,-130.5,26.729],[2.5,-128.5,26.738],
+    [3.0,-133.0,26.233],[3.0,-132.5,26.486],[3.0,-132.0,26.61],
+    [3.5,-133.0,26.053],[3.5,-132.5,26.399],[3.5,-132.0,26.44],[3.5,-131.5,26.692],[3.5,-130.5,26.387],[3.5,-130.0,26.284],[3.5,-129.5,26.289],[3.5,-129.0,26.49],
+    [4.0,-132.0,26.411],[4.0,-131.5,26.738],[4.0,-130.5,26.29],[4.0,-130.0,26.285],[4.0,-129.0,26.609],
+    [5.0,-133.0,26.877],[5.0,-132.5,26.965],[5.0,-131.5,27.048],
+    [5.5,-133.0,26.885],[5.5,-132.5,26.93],[5.5,-131.5,26.968],[5.5,-131.0,26.515],
+    [6.0,-132.5,26.843],[6.0,-132.0,26.965]
+  ];
+
+  // 2D domain and grid
+  var lat2dRange = [1, 6], lon2dRange = [-133, -128];
+  var gridLats = [1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6];
+  var gridLons = [-133,-132.5,-132,-131.5,-131,-130.5,-130,-129.5,-129,-128.5,-128];
+  var obsSet2d = {};
+  sstObs2d.forEach(function(d) { obsSet2d[d[0] + ',' + d[1]] = d[2]; });
+
+  // Thermal colormap (same as hero figure)
+  function thermal(t) {
+    t = Math.max(0, Math.min(1, t));
+    if (t < 0.25) { var s = t / 0.25; return [Math.round(s * 30), Math.round(s * 80 + 20), Math.round(120 + s * 80)]; }
+    if (t < 0.5)  { var s = (t - 0.25) / 0.25; return [Math.round(30 + s * 20), Math.round(100 + s * 155), Math.round(200 - s * 40)]; }
+    if (t < 0.75) { var s = (t - 0.5) / 0.25; return [Math.round(50 + s * 205), Math.round(255 - s * 55), Math.round(160 - s * 120)]; }
+    var s = (t - 0.75) / 0.25; return [255, Math.round(200 - s * 180), Math.round(40 - s * 40)];
+  }
+  function sstColor(val, vmin, vmax) {
+    return thermal((val - vmin) / (vmax - vmin));
+  }
+
+  // 2D GP helper
+  function gpPredict2d(obs, ls, sv, nv, gridNx, gridNy) {
+    var n = obs.length;
+    var obsLat = obs.map(function(d){ return d[0]; });
+    var obsLon = obs.map(function(d){ return d[1]; });
+    var obsSST = obs.map(function(d){ return d[2]; });
+
+    var meanSST = 0;
+    for (var i = 0; i < n; i++) meanSST += obsSST[i];
+    meanSST /= n;
+    var resid = obsSST.map(function(s){ return s - meanSST; });
+
+    function rbf2d(lat1, lon1, lat2, lon2) {
+      var dlat = lat1 - lat2, dlon = lon1 - lon2;
+      return sv * Math.exp(-0.5 * (dlat*dlat + dlon*dlon) / (ls*ls));
+    }
+
+    var K = [];
+    for (var i = 0; i < n; i++) {
+      K[i] = [];
+      for (var j = 0; j < n; j++) {
+        K[i][j] = rbf2d(obsLat[i], obsLon[i], obsLat[j], obsLon[j]);
+        if (i === j) K[i][j] += nv + 1e-6;
+      }
+    }
+    var Kinv = numeric.inv(K);
+    var alpha = numeric.dot(Kinv, resid);
+
+    var predMean = new Float32Array(gridNx * gridNy);
+    var predStd = new Float32Array(gridNx * gridNy);
+    for (var iy = 0; iy < gridNy; iy++) {
+      var lat = lat2dRange[0] + (lat2dRange[1] - lat2dRange[0]) * iy / (gridNy - 1);
+      for (var ix = 0; ix < gridNx; ix++) {
+        var lon = lon2dRange[0] + (lon2dRange[1] - lon2dRange[0]) * ix / (gridNx - 1);
+        var kStar = [];
+        for (var i = 0; i < n; i++) kStar.push(rbf2d(lat, lon, obsLat[i], obsLon[i]));
+        predMean[iy * gridNx + ix] = numeric.dot(kStar, alpha) + meanSST;
+        var v = numeric.dot(Kinv, kStar);
+        var variance = Math.max(0, sv - numeric.dot(kStar, v));
+        predStd[iy * gridNx + ix] = Math.sqrt(variance);
+      }
+    }
+    return {mean: predMean, std: predStd, meanSST: meanSST};
+  }
+
+  // Blue-white-red colormap for std dev
+  function stdColor(val, smin, smax) {
+    var t = Math.max(0, Math.min(1, (val - smin) / (smax - smin)));
+    // Purple to white: low std = dark purple, high std = bright yellow/white
+    var r = Math.round(255 * t);
+    var g = Math.round(80 * (1 - t) + 255 * t * t);
+    var b = Math.round(180 * (1 - t) + 50 * t);
+    return [r, g, b];
+  }
+
+  // Helper to render one 2D heatmap on a canvas
+  var CANVAS2D_W = 320;
+  var CANVAS2D_H = Math.round(320 * (lat2dRange[1] - lat2dRange[0]) / (lon2dRange[1] - lon2dRange[0]));
+  function render2dCanvas(canvas, gridData, gridNx, gridNy, colorFn, vmin, vmax, obs, title, cbLabel) {
+    var W = CANVAS2D_W;
+    var H = CANVAS2D_H;
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+
+    var ctx2 = canvas.getContext('2d');
+    ctx2.scale(dpr, dpr);
+
+    // Draw heatmap
+    for (var iy = 0; iy < gridNy; iy++) {
+      for (var ix = 0; ix < gridNx; ix++) {
+        var c = colorFn(gridData[iy * gridNx + ix], vmin, vmax);
+        ctx2.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+        var px = ix * W / gridNx;
+        var py = (gridNy - 1 - iy) * H / gridNy;
+        ctx2.fillRect(px, py, Math.ceil(W / gridNx), Math.ceil(H / gridNy));
+      }
+    }
+
+    // Observation dots
+    if (obs) {
+      obs.forEach(function(d) {
+        var px = (d[1] - lon2dRange[0]) / (lon2dRange[1] - lon2dRange[0]) * W;
+        var py = (1 - (d[0] - lat2dRange[0]) / (lat2dRange[1] - lat2dRange[0])) * H;
+        ctx2.beginPath(); ctx2.arc(px, py, 2.5, 0, 2 * Math.PI);
+        ctx2.fillStyle = 'rgba(0,0,0,0.5)'; ctx2.fill();
+        ctx2.strokeStyle = 'white'; ctx2.lineWidth = 0.6; ctx2.stroke();
+      });
+    }
+
+    // Title
+    ctx2.fillStyle = '#333'; ctx2.font = '13px sans-serif';
+    ctx2.textAlign = 'center'; ctx2.fillText(title, W / 2, 16);
+
+    // Axis labels
+    ctx2.fillStyle = '#555'; ctx2.font = '10px sans-serif'; ctx2.textAlign = 'center';
+    for (var lon = -133; lon <= -128; lon += 1) {
+      var px = (lon - lon2dRange[0]) / (lon2dRange[1] - lon2dRange[0]) * W;
+      ctx2.fillText(Math.abs(lon) + '\u00B0W', px, H - 3);
+    }
+    ctx2.textAlign = 'right';
+    for (var lat = 1; lat <= 6; lat += 1) {
+      var py = (1 - (lat - lat2dRange[0]) / (lat2dRange[1] - lat2dRange[0])) * H;
+      ctx2.fillText(lat + '\u00B0N', 24, py + 4);
+    }
+
+    // Colorbar
+    var cbW = 12, cbH = H - 50, cbX = W - 25, cbY = 25;
+    for (var i = 0; i < cbH; i++) {
+      var c = colorFn(vmax - (vmax - vmin) * i / cbH, vmin, vmax);
+      ctx2.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+      ctx2.fillRect(cbX, cbY + i, cbW, 1);
+    }
+    ctx2.strokeStyle = '#999'; ctx2.lineWidth = 0.5;
+    ctx2.strokeRect(cbX, cbY, cbW, cbH);
+    ctx2.fillStyle = '#555'; ctx2.font = '9px sans-serif'; ctx2.textAlign = 'left';
+    ctx2.fillText(vmax.toFixed(1) + (cbLabel || ''), cbX + cbW + 2, cbY + 7);
+    ctx2.fillText(vmin.toFixed(1) + (cbLabel || ''), cbX + cbW + 2, cbY + cbH);
+  }
+
+  function draw2dGP(meanCanvasId, stdCanvasId, obs, ls, sv, nv, titlePrefix) {
+    var gridNx = 50, gridNy = 35;
+    var pred = gpPredict2d(obs, ls, sv, nv, gridNx, gridNy);
+
+    var meanCanvas = document.getElementById(meanCanvasId);
+    render2dCanvas(meanCanvas, pred.mean, gridNx, gridNy, sstColor, 25.8, 27.2,
+      obs, titlePrefix + ' \u2014 Posterior mean', '\u00B0C');
+
+    var stdCanvas = document.getElementById(stdCanvasId);
+    // Find std range for colorbar
+    var smax = 0;
+    for (var i = 0; i < pred.std.length; i++) {
+      if (pred.std[i] > smax) smax = pred.std[i];
+    }
+    smax = Math.ceil(smax * 10) / 10;  // round up to 1 decimal
+    render2dCanvas(stdCanvas, pred.std, gridNx, gridNy, stdColor, 0, smax,
+      obs, titlePrefix + ' \u2014 Posterior std dev', '\u00B0C');
+  }
+
+  // Draw raw 2D observations as a grid (colored cells for obs, dark for missing)
+  function draw2dObs(canvasId, obs, title) {
+    var canvas = document.getElementById(canvasId);
+    var W = 500;
+    var nLon = gridLons.length, nLat = gridLats.length;
+    var cellW = W / nLon;
+    var cellH = cellW;  // square cells
+    var H = Math.round(nLat * cellH);
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+
+    var ctx2 = canvas.getContext('2d');
+    ctx2.scale(dpr, dpr);
+
+    var vmin = 25.8, vmax = 27.2;
+
+    // Draw grid cells
+    for (var iy = 0; iy < nLat; iy++) {
+      for (var ix = 0; ix < nLon; ix++) {
+        var key = gridLats[iy] + ',' + gridLons[ix];
+        var px = ix * cellW;
+        var py = (nLat - 1 - iy) * cellH;
+
+        if (obsSet2d.hasOwnProperty(key)) {
+          var c = sstColor(obsSet2d[key], vmin, vmax);
+          ctx2.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+        } else {
+          ctx2.fillStyle = '#1a1a2e';  // dark for missing
+        }
+        ctx2.fillRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+
+        // Grid lines
+        ctx2.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx2.lineWidth = 0.5;
+        ctx2.strokeRect(px, py, Math.ceil(cellW), Math.ceil(cellH));
+      }
+    }
+
+    // Title
+    ctx2.fillStyle = '#ccc'; ctx2.font = '14px sans-serif';
+    ctx2.textAlign = 'center'; ctx2.fillText(title, W / 2, 20);
+
+    // Axis labels
+    ctx2.fillStyle = '#aaa'; ctx2.font = '11px sans-serif'; ctx2.textAlign = 'center';
+    for (var lon = -133; lon <= -128; lon += 1) {
+      var px = (lon - lon2dRange[0]) / (lon2dRange[1] - lon2dRange[0]) * W;
+      ctx2.fillText(Math.abs(lon) + '\u00B0W', px, H - 4);
+    }
+    ctx2.textAlign = 'right';
+    for (var lat = 1; lat <= 6; lat += 1) {
+      var py = (1 - (lat - lat2dRange[0]) / (lat2dRange[1] - lat2dRange[0])) * H;
+      ctx2.fillText(lat + '\u00B0N', 28, py + 4);
+    }
+
+    // Colorbar
+    var cbW = 15, cbH = H - 60, cbX = W - 30, cbY = 30;
+    for (var i = 0; i < cbH; i++) {
+      var c = sstColor(vmax - (vmax - vmin) * i / cbH, vmin, vmax);
+      ctx2.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+      ctx2.fillRect(cbX, cbY + i, cbW, 1);
+    }
+    ctx2.strokeStyle = '#666'; ctx2.lineWidth = 0.5;
+    ctx2.strokeRect(cbX, cbY, cbW, cbH);
+    ctx2.fillStyle = '#aaa'; ctx2.font = '10px sans-serif'; ctx2.textAlign = 'left';
+    ctx2.fillText(vmax + '\u00B0C', cbX + cbW + 3, cbY + 8);
+    ctx2.fillText(vmin + '\u00B0C', cbX + cbW + 3, cbY + cbH);
+  }
+
+  // ---- Raw 2D observations ----
+  draw2dObs('obs2d-canvas', sstObs2d, '2D MODIS SST observations \u2014 1\u00B0\u20136\u00B0N, 133\u00B0\u2013128\u00B0W');
+
+  // ---- 2D Lengthscale demo ----
+  (function() {
+    var slider = document.getElementById('ls2d-slider');
+    var label = document.getElementById('ls2d-slider-value');
+    function update() {
+      var ls = parseFloat(slider.value);
+      label.textContent = ls.toFixed(1);
+      draw2dGP('ls2d-mean', 'ls2d-std', sstObs2d, ls, 1.0, 0.15,
+        '\u2113 = ' + ls.toFixed(1) + '\u00B0');
+    }
+    slider.addEventListener('input', update);
+    update();
+  })();
+  </script>
+
+  <!-- ======================== SIGNAL VARIANCE INTERACTIVE ======================== -->
+  <h2>Signal Variance</h2>
+  <p>
+    The signal variance <d-math>\sigma_f^2</d-math> controls the overall amplitude of SST
+    fluctuations. It represents the expected variance of the temperature field itself, independent of measurement
+    noise. Physically, this reflects how much temperature varies across the region of interest.
+  </p>
+  <p>
+    Drag the slider to see how the signal variance scales the uncertainty band and affects how tightly the GP
+    posterior follows the observations:
+  </p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 65px;">
+      <span style="font-size:14px; white-space:nowrap;">Signal variance (&sigma;&sup2;<sub>f</sub>):
+        <strong><span id="sv-slider-value">1.00</span></strong>
+      </span>
+      <input type="range" id="sv-slider" min="0.05" max="5" step="0.05" value="1.0"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div id="sv-interactive-plot" style="width:100%; height:400px;"></div>
+    <figcaption>
+      Small signal variance means the model expects little variation&mdash;predictions regress toward the mean and
+      the uncertainty band is narrow. Large signal variance lets the model express bigger swings and the
+      uncertainty band grows accordingly.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var obsX = sstObs.map(function(d) { return d[0]; });
+    var obsY = sstObs.map(function(d) { return d[1]; });
+    var n = obsX.length;
+
+    var meanY = 0;
+    for (var i = 0; i < n; i++) meanY += obsY[i];
+    meanY /= n;
+    var residuals = obsY.map(function(y) { return y - meanY; });
+
+    var testX = [];
+    for (var t = 0; t < 400; t++) testX.push(-140.5 + t * (17.5 / 399));
+
+    function rbf(x1, x2, ls, sv) {
+      var d = x1 - x2;
+      return sv * Math.exp(-0.5 * d * d / (ls * ls));
+    }
+
+    function drawGP(sv) {
+      var ls = 3.0, nv = 0.15;
+
+      var K = [];
+      for (var i = 0; i < n; i++) {
+        K[i] = [];
+        for (var j = 0; j < n; j++) {
+          K[i][j] = rbf(obsX[i], obsX[j], ls, sv);
+          if (i === j) K[i][j] += nv + 1e-6;
+        }
+      }
+      var Kinv = numeric.inv(K);
+      var alpha = numeric.dot(Kinv, residuals);
+
+      var mean = [], upper = [], lower = [];
+      for (var t = 0; t < testX.length; t++) {
+        var kStar = [];
+        for (var i = 0; i < n; i++) kStar.push(rbf(testX[t], obsX[i], ls, sv));
+        var mu = numeric.dot(kStar, alpha);
+        var v = numeric.dot(Kinv, kStar);
+        var variance = Math.max(0, sv - numeric.dot(kStar, v));
+        var std = Math.sqrt(variance);
+        mean.push(mu + meanY);
+        upper.push(mu + meanY + 2 * std);
+        lower.push(mu + meanY - 2 * std);
+      }
+
+      var div = document.getElementById('sv-interactive-plot');
+      div.innerHTML = '';
+      var ctx = makeAxes('sv-interactive-plot',
+        'GP fit \u2014 \u03C3\u00B2f = ' + sv.toFixed(2) + '  (\u2113 = 3.0\u00B0, \u03C3\u00B2n = 0.15)');
+
+      var bandData = testX.map(function(x, i) { return {x: x, lo: lower[i], hi: upper[i]}; });
+      var area = d3.area()
+        .x(function(d) { return ctx.xScale(d.x); })
+        .y0(function(d) { return ctx.yScale(d.lo); })
+        .y1(function(d) { return ctx.yScale(d.hi); });
+      ctx.g.append('path').datum(bandData).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      var inner = testX.map(function(x, i) {
+        var s1 = (upper[i] - mean[i]) / 2;
+        return {x: x, lo: mean[i] - s1, hi: mean[i] + s1};
+      });
+      ctx.g.append('path').datum(inner).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      var line = d3.line()
+        .x(function(d, i) { return ctx.xScale(testX[i]); })
+        .y(function(d) { return ctx.yScale(d); });
+      ctx.g.append('path').datum(mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 2.5);
+
+      plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+
+      ctx.g.append('line')
+        .attr('x1', 0).attr('x2', ctx.w)
+        .attr('y1', ctx.yScale(meanY)).attr('y2', ctx.yScale(meanY))
+        .attr('stroke', '#999').attr('stroke-width', 1).attr('stroke-dasharray', '6,4');
+    }
+
+    var slider = document.getElementById('sv-slider');
+    var label = document.getElementById('sv-slider-value');
+    slider.addEventListener('input', function() {
+      label.textContent = parseFloat(this.value).toFixed(2);
+      drawGP(parseFloat(this.value));
+    });
+
+    drawGP(1.0);
+  })();
+  </script>
+
+  <p>
+    When signal variance is too small, the posterior mean flattens out and can't reach the observed values.
+    When it's too large, the model becomes overly confident that big swings are possible, which inflates
+    uncertainty far from data. The right value reflects the actual range of SST variation in your domain.
+  </p>
+
+  <p>And here is the same effect in 2D:</p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 10px;">
+      <span style="font-size:14px; white-space:nowrap;">Signal variance (&sigma;&sup2;<sub>f</sub>):
+        <strong><span id="sv2d-slider-value">1.00</span></strong>
+      </span>
+      <input type="range" id="sv2d-slider" min="0.05" max="5" step="0.05" value="1.0"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+      <div style="position:relative;"><canvas id="sv2d-mean" style="border:1px solid #ddd;"></canvas></div>
+      <div style="position:relative;"><canvas id="sv2d-std" style="border:1px solid #ddd;"></canvas></div>
+    </div>
+    <figcaption>
+      2D GP (&#x2113; = 3.0&deg;, &sigma;&sup2;<sub>n</sub> = 0.15).
+      Small signal variance flattens the field toward the mean; large signal variance amplifies spatial patterns.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var slider = document.getElementById('sv2d-slider');
+    var label = document.getElementById('sv2d-slider-value');
+    function update() {
+      var sv = parseFloat(slider.value);
+      label.textContent = sv.toFixed(2);
+      draw2dGP('sv2d-mean', 'sv2d-std', sstObs2d, 3.0, sv, 0.15,
+        '\u03C3\u00B2f = ' + sv.toFixed(2));
+    }
+    slider.addEventListener('input', update);
+    update();
+  })();
+  </script>
+
+  <!-- ======================== NOISE VARIANCE INTERACTIVE ======================== -->
+  <h2>Noise Variance and Measurement Uncertainty</h2>
+  <p>
+    The noise variance <d-math>\sigma_n^2</d-math> represents measurement error and small-scale
+    variability we don't model. Buoys have measurement error on the order of 0.1&ndash;0.5&deg;C. Satellite SST products
+    can have bias and error on the order of 0.5&ndash;2&deg;C depending on location and atmospheric conditions.
+  </p>
+  <p>
+    Drag the slider and watch how the GP posterior changes from an exact interpolant (passing through every
+    point) to a smooth regression that treats observations as noisy:
+  </p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 65px;">
+      <span style="font-size:14px; white-space:nowrap;">Noise variance (&sigma;&sup2;<sub>n</sub>):
+        <strong><span id="nv-slider-value">0.15</span></strong>
+      </span>
+      <input type="range" id="nv-slider" min="0.001" max="3.0" step="0.01" value="0.15"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div id="nv-interactive-plot" style="width:100%; height:400px;"></div>
+    <figcaption>
+      1D noise variance demo (&#x2113; = 3.0&deg;, &sigma;&sup2;<sub>f</sub> = 1.0).
+      With very small noise, the GP passes exactly through each observation. With large noise,
+      it smooths heavily and reverts toward the mean.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var obsX = sstObs.map(function(d) { return d[0]; });
+    var obsY = sstObs.map(function(d) { return d[1]; });
+    var n = obsX.length;
+
+    var meanY = 0;
+    for (var i = 0; i < n; i++) meanY += obsY[i];
+    meanY /= n;
+    var residuals = obsY.map(function(y) { return y - meanY; });
+
+    var testX = [];
+    for (var t = 0; t < 400; t++) testX.push(-140.5 + t * (17.5 / 399));
+
+    function rbf(x1, x2, ls, sv) {
+      var d = x1 - x2;
+      return sv * Math.exp(-0.5 * d * d / (ls * ls));
+    }
+
+    function drawGP(nv) {
+      var ls = 3.0, sv = 1.0;
+
+      var K = [];
+      for (var i = 0; i < n; i++) {
+        K[i] = [];
+        for (var j = 0; j < n; j++) {
+          K[i][j] = rbf(obsX[i], obsX[j], ls, sv);
+          if (i === j) K[i][j] += nv + 1e-6;
+        }
+      }
+      var Kinv = numeric.inv(K);
+      var alpha = numeric.dot(Kinv, residuals);
+
+      var mean = [], upper = [], lower = [];
+      for (var t = 0; t < testX.length; t++) {
+        var kStar = [];
+        for (var i = 0; i < n; i++) kStar.push(rbf(testX[t], obsX[i], ls, sv));
+        var mu = numeric.dot(kStar, alpha);
+        var v = numeric.dot(Kinv, kStar);
+        var variance = Math.max(0, sv - numeric.dot(kStar, v));
+        var std = Math.sqrt(variance);
+        mean.push(mu + meanY);
+        upper.push(mu + meanY + 2 * std);
+        lower.push(mu + meanY - 2 * std);
+      }
+
+      var div = document.getElementById('nv-interactive-plot');
+      div.innerHTML = '';
+      var ctx = makeAxes('nv-interactive-plot',
+        'GP fit \u2014 \u03C3\u00B2n = ' + nv.toFixed(3) + '  (\u2113 = 3.0\u00B0, \u03C3\u00B2f = 1.0)');
+
+      var bandData = testX.map(function(x, i) { return {x: x, lo: lower[i], hi: upper[i]}; });
+      var area = d3.area()
+        .x(function(d) { return ctx.xScale(d.x); })
+        .y0(function(d) { return ctx.yScale(d.lo); })
+        .y1(function(d) { return ctx.yScale(d.hi); });
+      ctx.g.append('path').datum(bandData).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      var inner = testX.map(function(x, i) {
+        var s1 = (upper[i] - mean[i]) / 2;
+        return {x: x, lo: mean[i] - s1, hi: mean[i] + s1};
+      });
+      ctx.g.append('path').datum(inner).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+
+      var line = d3.line()
+        .x(function(d, i) { return ctx.xScale(testX[i]); })
+        .y(function(d) { return ctx.yScale(d); });
+      ctx.g.append('path').datum(mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 2.5);
+
+      plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+
+      ctx.g.append('line')
+        .attr('x1', 0).attr('x2', ctx.w)
+        .attr('y1', ctx.yScale(meanY)).attr('y2', ctx.yScale(meanY))
+        .attr('stroke', '#999').attr('stroke-width', 1).attr('stroke-dasharray', '6,4');
+    }
+
+    var slider = document.getElementById('nv-slider');
+    var label = document.getElementById('nv-slider-value');
+    slider.addEventListener('input', function() {
+      label.textContent = parseFloat(this.value).toFixed(3);
+      drawGP(parseFloat(this.value));
+    });
+
+    drawGP(0.15);
+  })();
+  </script>
+
+  <p>And the same effect in 2D:</p>
+
+  <figure class="l-body-outset">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 10px;">
+      <span style="font-size:14px; white-space:nowrap;">Noise variance (&sigma;&sup2;<sub>n</sub>):
+        <strong><span id="nv2d-slider-value">0.15</span></strong>
+      </span>
+      <input type="range" id="nv2d-slider" min="0.001" max="3.0" step="0.01" value="0.15"
+             style="flex:1; height:6px; cursor:pointer;">
+    </div>
+    <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+      <div style="position:relative;"><canvas id="nv2d-mean" style="border:1px solid #ddd;"></canvas></div>
+      <div style="position:relative;"><canvas id="nv2d-std" style="border:1px solid #ddd;"></canvas></div>
+    </div>
+    <figcaption>
+      2D GP (&#x2113; = 3.0&deg;, &sigma;&sup2;<sub>f</sub> = 1.0).
+      Small noise &rarr; exact interpolation with sharp features. Large noise &rarr; heavily smoothed field.
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    var slider = document.getElementById('nv2d-slider');
+    var label = document.getElementById('nv2d-slider-value');
+    function update() {
+      var nv = parseFloat(slider.value);
+      label.textContent = nv.toFixed(3);
+      draw2dGP('nv2d-mean', 'nv2d-std', sstObs2d, 3.0, 1.0, nv,
+        '\u03C3\u00B2n = ' + nv.toFixed(3));
+    }
+    slider.addEventListener('input', update);
+    update();
+  })();
+  </script>
+
+  <p>
+    Getting noise variance right is crucial for good predictions. Too small, and we overfit to measurement artifacts.
+    Too large, and we ignore real data. In practice, we estimate this from the data using the marginal likelihood
+    (discussed next) or from knowledge of instrument specifications.
+  </p>
+
+  <script>
+  (function() {
+    var obsX = sstObs.map(function(d) { return d[0]; });
+    var obsY = sstObs.map(function(d) { return d[1]; });
+    var n = obsX.length;
+    var meanY = 0;
+    for (var i = 0; i < n; i++) meanY += obsY[i];
+    meanY /= n;
+    var residuals = obsY.map(function(y) { return y - meanY; });
+    var testX = [];
+    for (var t = 0; t < 400; t++) testX.push(-140.5 + t * (17.5 / 399));
+
+    function rbf(x1, x2, ls, sv) {
+      var d = x1 - x2;
+      return sv * Math.exp(-0.5 * d * d / (ls * ls));
+    }
+
+    function update() {
+      var ls = parseFloat(document.getElementById('all-ls').value);
+      var sv = parseFloat(document.getElementById('all-sv').value);
+      var nv = parseFloat(document.getElementById('all-nv').value);
+      document.getElementById('all-ls-value').textContent = ls.toFixed(1);
+      document.getElementById('all-sv-value').textContent = sv.toFixed(2);
+      document.getElementById('all-nv-value').textContent = nv.toFixed(3);
+
+      // 1D GP
+      var K = [];
+      for (var i = 0; i < n; i++) {
+        K[i] = [];
+        for (var j = 0; j < n; j++) {
+          K[i][j] = rbf(obsX[i], obsX[j], ls, sv);
+          if (i === j) K[i][j] += nv + 1e-6;
+        }
+      }
+      var Kinv = numeric.inv(K);
+      var alpha = numeric.dot(Kinv, residuals);
+
+      var mean = [], upper = [], lower = [];
+      for (var t = 0; t < testX.length; t++) {
+        var kStar = [];
+        for (var i = 0; i < n; i++) kStar.push(rbf(testX[t], obsX[i], ls, sv));
+        var mu = numeric.dot(kStar, alpha);
+        var v = numeric.dot(Kinv, kStar);
+        var variance = Math.max(0, sv - numeric.dot(kStar, v));
+        var std = Math.sqrt(variance);
+        mean.push(mu + meanY);
+        upper.push(mu + meanY + 2 * std);
+        lower.push(mu + meanY - 2 * std);
+      }
+
+      var div = document.getElementById('all-1d-plot');
+      div.innerHTML = '';
+      var ctx = makeAxes('all-1d-plot',
+        '1D GP \u2014 \u2113 = ' + ls.toFixed(1) + '\u00B0, \u03C3\u00B2f = ' + sv.toFixed(2) + ', \u03C3\u00B2n = ' + nv.toFixed(3));
+
+      var bandData = testX.map(function(x, i) { return {x: x, lo: lower[i], hi: upper[i]}; });
+      var area = d3.area()
+        .x(function(d) { return ctx.xScale(d.x); })
+        .y0(function(d) { return ctx.yScale(d.lo); })
+        .y1(function(d) { return ctx.yScale(d.hi); });
+      ctx.g.append('path').datum(bandData).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+      var inner = testX.map(function(x, i) {
+        var s1 = (upper[i] - mean[i]) / 2;
+        return {x: x, lo: mean[i] - s1, hi: mean[i] + s1};
+      });
+      ctx.g.append('path').datum(inner).attr('d', area)
+        .attr('fill', '#4dabf7').attr('opacity', 0.22);
+      var line = d3.line()
+        .x(function(d, i) { return ctx.xScale(testX[i]); })
+        .y(function(d) { return ctx.yScale(d); });
+      ctx.g.append('path').datum(mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#1971c2').attr('stroke-width', 2.5);
+      plotDots(ctx.g, ctx.xScale, ctx.yScale, sstObs);
+      ctx.g.append('line')
+        .attr('x1', 0).attr('x2', ctx.w)
+        .attr('y1', ctx.yScale(meanY)).attr('y2', ctx.yScale(meanY))
+        .attr('stroke', '#999').attr('stroke-width', 1).attr('stroke-dasharray', '6,4');
+
+      // 2D GP (commented out for now)
+      // draw2dGP('all-2d-mean', 'all-2d-std', sstObs2d, ls, sv, nv,
+      //   '\u2113=' + ls.toFixed(1) + '\u00B0 \u03C3\u00B2f=' + sv.toFixed(2) + ' \u03C3\u00B2n=' + nv.toFixed(3));
+    }
+
+    document.getElementById('all-ls').addEventListener('input', update);
+    document.getElementById('all-sv').addEventListener('input', update);
+    document.getElementById('all-nv').addEventListener('input', update);
+    update();
+  })();
+  </script>
+
+  <!-- ======================== MARGINAL LIKELIHOOD ======================== -->
+  <h2>Marginal Likelihood and Model Optimization</h2>
+  <p>
+    How do we choose the hyperparameters <d-math>\theta = (\sigma_f^2, \ell, \sigma_n^2)</d-math>? The
+    most principled approach is to maximize the marginal likelihood&mdash;the probability of observing the data under our
+    model, averaged over all possible functions consistent with the GP prior.
+  </p>
+
+  <d-math block>
+    p(\mathbf{y}\mid\mathbf{X}, \boldsymbol{\theta}) = \int p(\mathbf{y}\mid f, \mathbf{X})\, p(f\mid\mathbf{X}, \boldsymbol{\theta})\, df
+    \tag{5}
+  </d-math>
+
+  <p>
+    The marginal likelihood has an elegant form under the Gaussian Process:
+  </p>
+
+  <d-math block>
+    \log p(\mathbf{y}\mid\boldsymbol{\theta}) = -\tfrac{1}{2}\mathbf{y}^\top (\mathbf{K} + \sigma_n^2 \mathbf{I})^{-1} \mathbf{y} - \tfrac{1}{2} \log |\mathbf{K} + \sigma_n^2 \mathbf{I}| - \tfrac{n}{2} \log 2\pi
+    \tag{6}
+  </d-math>
+
+  <p>
+    This has three terms:
+  </p>
+  <ul>
+    <li><strong>Data fit term:</strong> <d-math>-\frac{1}{2}\mathbf{y}^\top (\mathbf{K} + \sigma_n^2 \mathbf{I})^{-1} \mathbf{y}</d-math> &mdash; penalizes poor fit to data</li>
+    <li><strong>Complexity penalty:</strong> <d-math>-\frac{1}{2} \log |\mathbf{K} + \sigma_n^2 \mathbf{I}|</d-math> &mdash; penalizes overly complex functions (automatic Occam's razor)</li>
+    <li><strong>Normalization:</strong> <d-math>-\frac{n}{2} \log 2\pi</d-math> &mdash; constant term</li>
+  </ul>
+
+  <figure class="l-page">
+    <div id="lml-viz-container" style="position:relative; width:100%;"></div>
+    <figcaption>
+      Log-marginal likelihood landscape for a 23-point SST subsample. The central heatmap shows
+      <d-math>\log p(\mathbf{y}\mid\boldsymbol{\theta})</d-math> as a function of noise standard deviation
+      <d-math>\sigma_n</d-math> (x-axis) and lengthscale <d-math>\ell</d-math> (y-axis), with signal variance
+      <d-math>\sigma_f^2</d-math> optimized at each point. Click anywhere on the heatmap to see the GP fit
+      at those hyperparameters. The four inset panels show contrasting fits: the optimum (top-left),
+      overfitting (bottom-left), underfitting (top-right), and an ill-conditioned smooth fit (bottom-right).
+    </figcaption>
+  </figure>
+
+  <script>
+  (function() {
+    // Pre-computed LML data (40x40 grid with 23 subsampled SST observations)
+    var GRID_NLS = 40, GRID_NNS = 40;
+    var gridLS = [0.3, 0.3298, 0.3625, 0.3984, 0.438, 0.4814, 0.5292, 0.5817, 0.6394, 0.7028, 0.7725, 0.8491, 0.9334, 1.026, 1.1278, 1.2396, 1.3626, 1.4978, 1.6464, 1.8097, 1.9893, 2.1866, 2.4035, 2.642, 2.9041, 3.1921, 3.5088, 3.8569, 4.2395, 4.6601, 5.1224, 5.6306, 6.1892, 6.8032, 7.4781, 8.2199, 9.0354, 9.9317, 10.917, 12.0];
+    var gridNS = [0.01, 0.0114, 0.0129, 0.0147, 0.0167, 0.019, 0.0216, 0.0246, 0.0279, 0.0318, 0.0361, 0.0411, 0.0467, 0.0531, 0.0604, 0.0687, 0.0781, 0.0888, 0.101, 0.1149, 0.1306, 0.1485, 0.1689, 0.192, 0.2183, 0.2483, 0.2823, 0.321, 0.365, 0.4151, 0.472, 0.5367, 0.6103, 0.6939, 0.7891, 0.8972, 1.0202, 1.1601, 1.3191, 1.5];
+    var flatLML = [-61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -60.5, -58.0, -55.6, -53.3, -51.4, -49.6, -48.0, -46.5, -45.0, -43.5, -41.6, -38.1, -34.0, -30.5, -27.8, -25.9, -24.5, -23.6, -23.2, -23.1, -23.4, -24.1, -25.3, -26.8, -28.6, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.6, -56.8, -54.3, -52.1, -50.3, -48.7, -47.2, -45.6, -43.4, -38.5, -33.9, -30.3, -27.6, -25.6, -24.2, -23.4, -23.0, -23.0, -23.4, -24.1, -25.3, -26.8, -28.6, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -58.1, -55.5, -53.3, -51.2, -49.4, -47.7, -44.6, -38.6, -33.8, -30.0, -27.3, -25.3, -24.0, -23.2, -22.9, -22.9, -23.3, -24.1, -25.3, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -60.1, -57.3, -54.7, -52.2, -49.8, -45.0, -38.5, -33.5, -29.7, -26.9, -25.0, -23.7, -23.0, -22.7, -22.8, -23.3, -24.0, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.0, -55.6, -52.3, -45.1, -38.4, -33.2, -29.4, -26.6, -24.7, -23.5, -22.8, -22.6, -22.7, -23.2, -24.0, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.6, -53.9, -45.0, -38.1, -33.0, -29.1, -26.3, -24.5, -23.2, -22.6, -22.4, -22.6, -23.1, -24.0, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.0, -44.9, -37.9, -32.7, -28.8, -26.1, -24.2, -23.0, -22.4, -22.3, -22.5, -23.1, -23.9, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.0, -44.7, -37.6, -32.4, -28.5, -25.8, -24.0, -22.8, -22.3, -22.1, -22.4, -23.0, -23.9, -25.2, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.0, -44.5, -37.4, -32.1, -28.2, -25.5, -23.7, -22.6, -22.1, -22.0, -22.4, -23.0, -23.9, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.0, -44.4, -37.2, -31.9, -28.0, -25.3, -23.5, -22.4, -21.9, -21.9, -22.3, -22.9, -23.9, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.1, -44.4, -37.1, -31.7, -27.8, -25.1, -23.3, -22.3, -21.8, -21.8, -22.2, -22.9, -23.9, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.3, -44.5, -37.1, -31.6, -27.7, -24.9, -23.1, -22.1, -21.7, -21.7, -22.1, -22.9, -23.9, -25.1, -26.7, -28.6, -30.6, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -54.7, -44.6, -37.1, -31.6, -27.6, -24.8, -23.0, -22.0, -21.6, -21.6, -22.1, -22.8, -23.8, -25.1, -26.7, -28.6, -30.6, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -55.2, -44.9, -37.2, -31.5, -27.5, -24.6, -22.8, -21.8, -21.4, -21.5, -22.0, -22.8, -23.8, -25.1, -26.7, -28.6, -30.6, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -55.7, -45.2, -37.2, -31.5, -27.4, -24.5, -22.7, -21.7, -21.3, -21.4, -22.0, -22.8, -23.8, -25.1, -26.7, -28.6, -30.6, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.1, -45.3, -37.3, -31.4, -27.2, -24.4, -22.6, -21.6, -21.2, -21.4, -21.9, -22.8, -23.8, -25.1, -26.7, -28.6, -30.6, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.4, -45.4, -37.2, -31.3, -27.1, -24.2, -22.4, -21.4, -21.1, -21.3, -21.9, -22.8, -23.8, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.6, -45.5, -37.2, -31.2, -27.0, -24.1, -22.3, -21.4, -21.1, -21.3, -21.9, -22.8, -23.9, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.8, -45.6, -37.2, -31.2, -26.9, -24.0, -22.2, -21.3, -21.0, -21.3, -21.9, -22.8, -23.9, -25.1, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -57.1, -45.7, -37.3, -31.2, -26.9, -24.0, -22.2, -21.3, -21.0, -21.3, -21.9, -22.9, -23.9, -25.2, -26.7, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -57.5, -46.0, -37.4, -31.3, -27.0, -24.1, -22.3, -21.4, -21.1, -21.4, -22.0, -22.9, -24.0, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -57.8, -46.2, -37.6, -31.4, -27.1, -24.2, -22.4, -21.5, -21.2, -21.5, -22.1, -23.0, -24.0, -25.2, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -58.2, -46.5, -37.9, -31.7, -27.3, -24.4, -22.6, -21.6, -21.4, -21.6, -22.3, -23.2, -24.1, -25.3, -26.8, -28.6, -30.7, -32.9, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -58.7, -47.0, -38.3, -32.0, -27.6, -24.7, -22.9, -21.9, -21.6, -21.9, -22.5, -23.4, -24.2, -25.3, -26.8, -28.6, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.4, -47.5, -38.8, -32.5, -28.1, -25.1, -23.3, -22.3, -22.0, -22.2, -22.8, -23.6, -24.2, -25.4, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -60.2, -48.4, -39.6, -33.2, -28.7, -25.7, -23.8, -22.8, -22.5, -22.7, -23.2, -23.7, -24.3, -25.4, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -49.5, -40.6, -34.2, -29.6, -26.5, -24.6, -23.5, -23.1, -23.2, -23.7, -23.8, -24.3, -25.4, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -51.0, -42.0, -35.4, -30.7, -27.5, -25.4, -24.3, -23.8, -23.9, -23.9, -23.8, -24.4, -25.4, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -53.2, -43.7, -36.8, -31.9, -28.6, -26.4, -25.1, -24.6, -24.6, -24.0, -23.9, -24.4, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.1, -46.0, -38.7, -33.4, -29.8, -27.5, -26.1, -25.6, -25.1, -24.1, -23.9, -24.4, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.8, -49.1, -41.3, -35.6, -31.7, -29.1, -27.4, -26.6, -25.2, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -53.5, -45.0, -38.8, -34.4, -31.2, -29.2, -27.5, -25.3, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -59.5, -50.1, -43.0, -37.7, -33.8, -31.1, -27.5, -25.3, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.3, -47.8, -41.2, -36.3, -31.2, -27.6, -25.3, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -52.2, -44.3, -36.9, -31.3, -27.6, -25.4, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -55.5, -44.9, -36.9, -31.3, -27.6, -25.4, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.1, -45.0, -37.0, -31.4, -27.6, -25.4, -24.2, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.2, -45.0, -37.0, -31.4, -27.6, -25.4, -24.3, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.3, -45.1, -37.0, -31.4, -27.7, -25.4, -24.3, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -61.0, -56.3, -45.2, -37.1, -31.4, -27.7, -25.4, -24.3, -24.0, -24.5, -25.5, -26.9, -28.7, -30.7, -33.0];
+    var flatSF2 = [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.924, 3.079, 2.416, 1.488, 0.564, 0.348, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.079, 1.488, 0.443, 0.348, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.564, 0.348, 0.348, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.443, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.168, 0.103, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.443, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.168, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.443, 0.348, 0.348, 0.273, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.443, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.564, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.103, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.719, 0.564, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.273, 0.214, 0.168, 0.168, 0.103, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.168, 0.916, 0.719, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.103, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.896, 1.488, 0.916, 0.719, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.168, 0.132, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 2.416, 1.896, 1.488, 0.916, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.273, 0.214, 0.168, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.079, 1.896, 0.916, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.214, 0.132, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 2.416, 0.719, 0.564, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.273, 0.214, 0.168, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.719, 0.564, 0.443, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.348, 0.348, 0.348, 0.273, 0.273, 0.214, 0.168, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.916, 0.719, 0.564, 0.564, 0.443, 0.443, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.348, 0.348, 0.273, 0.214, 0.168, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.488, 1.168, 0.916, 0.719, 0.564, 0.564, 0.443, 0.443, 0.443, 0.443, 0.443, 0.443, 0.348, 0.348, 0.348, 0.348, 0.273, 0.168, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 2.416, 1.488, 0.916, 0.719, 0.564, 0.564, 0.564, 0.443, 0.443, 0.443, 0.443, 0.443, 0.443, 0.443, 0.348, 0.348, 0.273, 0.214, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.488, 0.916, 0.719, 0.719, 0.564, 0.564, 0.564, 0.564, 0.564, 0.564, 0.564, 0.443, 0.443, 0.443, 0.348, 0.348, 0.214, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 2.416, 1.168, 0.916, 0.916, 0.719, 0.719, 0.719, 0.719, 0.719, 0.719, 0.564, 0.564, 0.564, 0.564, 0.564, 0.443, 0.348, 0.214, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.079, 1.896, 1.488, 1.168, 1.168, 0.916, 0.916, 0.916, 0.916, 0.916, 0.719, 0.719, 0.719, 0.719, 0.719, 0.564, 0.564, 0.443, 0.214, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 2.416, 1.896, 1.896, 1.488, 1.488, 1.488, 1.168, 1.168, 1.168, 1.168, 1.168, 0.916, 0.916, 0.916, 0.916, 0.719, 0.719, 0.443, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.079, 3.079, 2.416, 2.416, 2.416, 1.896, 1.896, 1.896, 1.488, 1.488, 1.488, 1.168, 1.168, 1.168, 0.916, 0.719, 0.564, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.924, 3.924, 3.079, 3.079, 2.416, 2.416, 1.896, 1.896, 1.488, 1.488, 1.168, 1.168, 0.564, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.079, 3.079, 2.416, 2.416, 2.416, 1.896, 1.488, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 3.924, 3.079, 3.079, 1.896, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 3.924, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.081, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.214, 0.132, 0.103, 0.064, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 0.273, 0.168, 0.132, 0.103, 0.081, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05];
+    var lmlMax = -21.04, clipMin = -61.0;
+
+    // Subsampled observations (23 points)
+    var lmlSubObs = [[-139.8542,26.65],[-139.5625,26.28],[-139.2708,26.345],[-138.9792,26.69],[-137.0625,27.26],[-136.7708,27.18],[-136.3958,27.53],[-136.1042,27.505],[-135.8125,27.435],[-134.6042,25.425],[-134.4792,27.365],[-134.3125,27.12],[-134.2708,25.825],[-131.9792,25.53],[-130.4375,25.925],[-129.5208,26.705],[-129.0208,27.385],[-128.7292,27.51],[-128.4375,27.45],[-128.1458,27.54],[-127.8125,27.205],[-126.8958,27.535],[-123.6875,27.035]];
+
+    function rbfKernel(X, ls, sf2) {
+      var n = X.length;
+      var K = [];
+      for (var i = 0; i < n; i++) {
+        K[i] = [];
+        for (var j = 0; j < n; j++) {
+          var d = X[i] - X[j];
+          K[i][j] = sf2 * Math.exp(-0.5 * d * d / (ls * ls));
+        }
+      }
+      return K;
+    }
+
+    function gpPredict1d(X, Y, xStar, ls, sf2, sn2) {
+      var n = X.length;
+      var meanY = 0;
+      for (var i = 0; i < n; i++) meanY += Y[i];
+      meanY /= n;
+      var y = Y.map(function(v) { return v - meanY; });
+
+      var K = rbfKernel(X, ls, sf2);
+      for (var i = 0; i < n; i++) K[i][i] += sn2;
+
+      try {
+        var Kinv = numeric.inv(K);
+      } catch(e) {
+        return { mean: xStar.map(function() { return meanY; }),
+                 std: xStar.map(function() { return Math.sqrt(sf2); }) };
+      }
+
+      var alpha = numeric.dot(Kinv, y);
+      var mu = [], sig = [];
+      for (var s = 0; s < xStar.length; s++) {
+        var kStar = [];
+        for (var i = 0; i < n; i++) {
+          var d = xStar[s] - X[i];
+          kStar.push(sf2 * Math.exp(-0.5 * d * d / (ls * ls)));
+        }
+        var m = 0;
+        for (var i = 0; i < n; i++) m += kStar[i] * alpha[i];
+        mu.push(m + meanY);
+
+        var v = sf2;
+        var tmp = numeric.dot(Kinv, kStar);
+        for (var i = 0; i < n; i++) v -= kStar[i] * tmp[i];
+        sig.push(Math.sqrt(Math.max(0, v)));
+      }
+      return { mean: mu, std: sig };
+    }
+
+    // Visualization dimensions
+    var HEATMAP_W = 360, HEATMAP_H = 300;
+    var INSET_W = 220, INSET_H = 140;
+    var TOTAL_W = INSET_W + 20 + HEATMAP_W + 20 + INSET_W;
+    var TOTAL_H = INSET_H + 15 + HEATMAP_H + 15 + INSET_H;
+
+    var container = document.getElementById('lml-viz-container');
+
+    // Create main SVG
+    var svg = d3.select(container).append('svg')
+      .attr('width', TOTAL_W).attr('height', TOTAL_H)
+      .style('display', 'block').style('margin', '0 auto');
+
+    // Positions
+    var heatX = INSET_W + 20, heatY = INSET_H + 15;
+    var insetPositions = [
+      { x: 0, y: 0, label: 'Optimum' },           // top-left
+      { x: 0, y: INSET_H + 15 + HEATMAP_H + 15, label: 'Overfitting' },  // bottom-left
+      { x: INSET_W + 20 + HEATMAP_W + 20, y: 0, label: 'Underfitting' }, // top-right
+      { x: INSET_W + 20 + HEATMAP_W + 20, y: INSET_H + 15 + HEATMAP_H + 15, label: 'Too smooth' }  // bottom-right
+    ];
+
+    // Contrast points (pre-computed)
+    var contrastPts = [
+      { ls: 1.810, ns: 0.472, sf2: 0.348, lml: -21.04 },   // optimum
+      { ls: 0.362, ns: 0.0279, sf2: 5.0, lml: -105.51 },     // overfit
+      { ls: 8.22, ns: 0.8972, sf2: 0.05, lml: -25.5 },       // underfit
+      { ls: 8.22, ns: 0.019, sf2: 5.0, lml: -6470.06 }       // smooth forced
+    ];
+
+    // Heatmap scales (log scale on both axes)
+    var hxScale = d3.scaleLog().domain([0.01, 1.5]).range([0, HEATMAP_W]);
+    var hyScale = d3.scaleLog().domain([0.3, 12]).range([HEATMAP_H, 0]);
+
+    // Draw heatmap using canvas (fast)
+    var fo = svg.append('foreignObject')
+      .attr('x', heatX).attr('y', heatY)
+      .attr('width', HEATMAP_W).attr('height', HEATMAP_H);
+    var heatCanvas = fo.append('xhtml:canvas')
+      .attr('width', HEATMAP_W).attr('height', HEATMAP_H)
+      .style('cursor', 'crosshair');
+    var hctx = heatCanvas.node().getContext('2d');
+
+    function lmlColor(val) {
+      var t = Math.max(0, Math.min(1, (val - clipMin) / (lmlMax - clipMin)));
+      // Blue (low) -> Green -> Yellow (high)
+      var r, g, b;
+      if (t < 0.5) {
+        var s = t * 2;
+        r = Math.round(20 + s * 40);
+        g = Math.round(30 + s * 160);
+        b = Math.round(120 - s * 60);
+      } else {
+        var s = (t - 0.5) * 2;
+        r = Math.round(60 + s * 195);
+        g = Math.round(190 + s * 55);
+        b = Math.round(60 - s * 50);
+      }
+      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    }
+
+    // Render heatmap from pre-computed data
+    function renderHeatmap() {
+      var cellW = HEATMAP_W / GRID_NNS;
+      var cellH = HEATMAP_H / GRID_NLS;
+      for (var i = 0; i < GRID_NLS; i++) {
+        for (var j = 0; j < GRID_NNS; j++) {
+          var idx = i * GRID_NNS + j;
+          var val = Math.max(clipMin, flatLML[idx]);
+          hctx.fillStyle = lmlColor(val);
+          var px = hxScale(gridNS[j]);
+          var py = hyScale(gridLS[i]);
+          hctx.fillRect(px, py, cellW + 0.5, cellH + 0.5);
+        }
+      }
+    }
+    renderHeatmap();
+
+    // Heatmap axes
+    var heatG = svg.append('g').attr('transform', 'translate(' + heatX + ',' + heatY + ')');
+
+    // X axis (noise std)
+    heatG.append('g').attr('transform', 'translate(0,' + HEATMAP_H + ')')
+      .call(d3.axisBottom(hxScale).ticks(5, '.2f'))
+      .selectAll('text').style('font-size', '10px');
+    heatG.append('text').attr('x', HEATMAP_W/2).attr('y', HEATMAP_H + 35)
+      .attr('text-anchor', 'middle').style('font-size', '12px').style('fill', '#333')
+      .text('Noise std (\u03C3\u2099)');
+
+    // Y axis (lengthscale)
+    heatG.append('g')
+      .call(d3.axisLeft(hyScale).ticks(5, '.1f'))
+      .selectAll('text').style('font-size', '10px');
+    heatG.append('text').attr('transform', 'rotate(-90)')
+      .attr('x', -HEATMAP_H/2).attr('y', -40)
+      .attr('text-anchor', 'middle').style('font-size', '12px').style('fill', '#333')
+      .text('Lengthscale (\u2113)');
+
+    // Title
+    heatG.append('text').attr('x', HEATMAP_W/2).attr('y', -6)
+      .attr('text-anchor', 'middle').style('font-size', '12px').style('fill', '#555')
+      .text('Log Marginal Likelihood');
+
+    // Colorbar
+    var cbW = 12, cbH = HEATMAP_H - 40;
+    var cbX = HEATMAP_W + 8, cbY = 20;
+    for (var i = 0; i < cbH; i++) {
+      var t = 1 - i / cbH;
+      var val = clipMin + t * (lmlMax - clipMin);
+      heatG.append('rect').attr('x', cbX).attr('y', cbY + i)
+        .attr('width', cbW).attr('height', 1).attr('fill', lmlColor(val));
+    }
+    heatG.append('text').attr('x', cbX + cbW + 3).attr('y', cbY + 4)
+      .style('font-size', '9px').style('fill', '#555').text(lmlMax.toFixed(0));
+    heatG.append('text').attr('x', cbX + cbW + 3).attr('y', cbY + cbH)
+      .style('font-size', '9px').style('fill', '#555').text(clipMin.toFixed(0));
+
+    // Mark global optimum with white star
+    var optX = hxScale(contrastPts[0].ns);
+    var optY = hyScale(contrastPts[0].ls);
+    heatG.append('text').attr('x', optX).attr('y', optY + 4)
+      .attr('text-anchor', 'middle').style('font-size', '16px').style('fill', 'white')
+      .style('text-shadow', '0 0 3px black').text('\u2605');
+
+    // Draw inset GP fits
+    var insetColors = ['#2b8a3e', '#e03131', '#1971c2', '#f59f00'];
+    var insetXDomain = [-140.5, -123];
+    var insetYDomain = [24, 28.5];
+
+    // Generate prediction x-coordinates
+    var xStar = [];
+    for (var i = 0; i <= 100; i++) xStar.push(-140.5 + (17.5) * i / 100);
+
+    var obsX = lmlSubObs.map(function(d) { return d[0]; });
+    var obsY = lmlSubObs.map(function(d) { return d[1]; });
+
+    function drawInset(idx) {
+      var pos = insetPositions[idx];
+      var pt = contrastPts[idx];
+      var color = insetColors[idx];
+
+      var g = svg.append('g').attr('transform', 'translate(' + pos.x + ',' + pos.y + ')');
+
+      // Background
+      g.append('rect').attr('width', INSET_W).attr('height', INSET_H)
+        .attr('fill', '#fafafa').attr('stroke', color).attr('stroke-width', 2)
+        .attr('rx', 4);
+
+      var m = { top: 22, right: 8, bottom: 20, left: 35 };
+      var w = INSET_W - m.left - m.right;
+      var h = INSET_H - m.top - m.bottom;
+      var ig = g.append('g').attr('transform', 'translate(' + m.left + ',' + m.top + ')');
+
+      var xS = d3.scaleLinear().domain(insetXDomain).range([0, w]);
+      var yS = d3.scaleLinear().domain(insetYDomain).range([h, 0]);
+
+      // Axes
+      ig.append('g').attr('transform', 'translate(0,' + h + ')')
+        .call(d3.axisBottom(xS).ticks(4).tickSize(3).tickFormat(''))
+        .selectAll('.domain').attr('stroke', '#ccc');
+      ig.append('g').call(d3.axisLeft(yS).ticks(3).tickSize(3).tickFormat(function(d) { return d + '\u00B0'; }))
+        .selectAll('text').style('font-size', '8px');
+      ig.selectAll('.domain').attr('stroke', '#ccc');
+
+      // GP prediction
+      var pred = gpPredict1d(obsX, obsY, xStar, pt.ls, pt.sf2, pt.ns * pt.ns);
+
+      // Uncertainty band
+      var areaData = xStar.map(function(x, i) {
+        return { x: x, lo: pred.mean[i] - 2 * pred.std[i], hi: pred.mean[i] + 2 * pred.std[i] };
+      });
+      var area = d3.area()
+        .x(function(d) { return xS(d.x); })
+        .y0(function(d) { return yS(Math.max(insetYDomain[0], d.lo)); })
+        .y1(function(d) { return yS(Math.min(insetYDomain[1], d.hi)); });
+      ig.append('path').datum(areaData).attr('d', area)
+        .attr('fill', color).attr('opacity', 0.15);
+
+      // Mean line
+      var line = d3.line()
+        .x(function(d, i) { return xS(xStar[i]); })
+        .y(function(d) { return yS(d); });
+      ig.append('path').datum(pred.mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 1.5);
+
+      // Data points
+      ig.selectAll('.inset-dot').data(lmlSubObs).enter().append('circle')
+        .attr('cx', function(d) { return xS(d[0]); })
+        .attr('cy', function(d) { return yS(d[1]); })
+        .attr('r', 2.5).attr('fill', '#e8590c').attr('stroke', 'white').attr('stroke-width', 0.5);
+
+      // Label
+      g.append('text').attr('x', 6).attr('y', 14)
+        .style('font-size', '10px').style('font-weight', 'bold').style('fill', color)
+        .text(pos.label);
+
+      // Parameters
+      g.append('text').attr('x', INSET_W - 4).attr('y', 14)
+        .attr('text-anchor', 'end').style('font-size', '9px').style('fill', '#888')
+        .text('LML = ' + pt.lml.toFixed(1));
+
+      g.append('text').attr('x', INSET_W - 4).attr('y', INSET_H - 4)
+        .attr('text-anchor', 'end').style('font-size', '8px').style('fill', '#999')
+        .text('\u2113=' + pt.ls.toFixed(2) + ' \u03C3\u00B2f=' + pt.sf2.toFixed(2) + ' \u03C3n=' + pt.ns.toFixed(3));
+
+      // Connecting line from inset to heatmap point
+      var heatPx = heatX + hxScale(pt.ns);
+      var heatPy = heatY + hyScale(pt.ls);
+      var insetCx, insetCy;
+      if (idx === 0) { insetCx = pos.x + INSET_W; insetCy = pos.y + INSET_H; }       // top-left -> bottom-right corner
+      else if (idx === 1) { insetCx = pos.x + INSET_W; insetCy = pos.y; }             // bottom-left -> top-right corner
+      else if (idx === 2) { insetCx = pos.x; insetCy = pos.y + INSET_H; }             // top-right -> bottom-left corner
+      else { insetCx = pos.x; insetCy = pos.y; }                                       // bottom-right -> top-left corner
+
+      svg.append('line')
+        .attr('x1', insetCx).attr('y1', insetCy)
+        .attr('x2', heatPx).attr('y2', heatPy)
+        .attr('stroke', color).attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '4,3').attr('opacity', 0.7);
+
+      // Marker on heatmap
+      svg.append('circle')
+        .attr('cx', heatPx).attr('cy', heatPy)
+        .attr('r', 5).attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2);
+    }
+
+    // Draw all 4 insets
+    for (var i = 0; i < 4; i++) drawInset(i);
+
+    // Click interaction: click on heatmap to see GP fit at that point
+    var clickInsetG = null;
+    heatCanvas.on('click', function(event) {
+      var rect = heatCanvas.node().getBoundingClientRect();
+      var mx = event.clientX - rect.left;
+      var my = event.clientY - rect.top;
+      var clickNs = hxScale.invert(mx);
+      var clickLs = hyScale.invert(my);
+
+      // Find nearest grid cell for sf2
+      var bestDist = Infinity, bestSf2 = 1.0, bestLml = -61.0;
+      for (var i = 0; i < GRID_NLS; i++) {
+        for (var j = 0; j < GRID_NNS; j++) {
+          var dist = Math.abs(gridLS[i] - clickLs) + Math.abs(gridNS[j] - clickNs);
+          if (dist < bestDist) {
+            bestDist = dist;
+            var idx = i * GRID_NNS + j;
+            bestSf2 = flatSF2[idx];
+            bestLml = flatLML[idx];
+          }
+        }
+      }
+
+      // Show floating inset near click
+      if (clickInsetG) clickInsetG.remove();
+      clickInsetG = svg.append('g');
+
+      // Position: center of heatmap area
+      var fX = heatX + (HEATMAP_W - INSET_W) / 2;
+      var fY = heatY + (HEATMAP_H - INSET_H) / 2;
+
+      var bg = clickInsetG.append('g').attr('transform', 'translate(' + fX + ',' + fY + ')');
+      bg.append('rect').attr('width', INSET_W).attr('height', INSET_H)
+        .attr('fill', 'white').attr('stroke', '#333').attr('stroke-width', 2)
+        .attr('rx', 4).attr('filter', 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))');
+
+      var mm = { top: 22, right: 8, bottom: 20, left: 35 };
+      var ww = INSET_W - mm.left - mm.right;
+      var hh = INSET_H - mm.top - mm.bottom;
+      var ig = bg.append('g').attr('transform', 'translate(' + mm.left + ',' + mm.top + ')');
+
+      var xS = d3.scaleLinear().domain(insetXDomain).range([0, ww]);
+      var yS = d3.scaleLinear().domain(insetYDomain).range([hh, 0]);
+
+      ig.append('g').attr('transform', 'translate(0,' + hh + ')')
+        .call(d3.axisBottom(xS).ticks(4).tickSize(3).tickFormat(''));
+      ig.append('g').call(d3.axisLeft(yS).ticks(3).tickSize(3).tickFormat(function(d) { return d + '\u00B0'; }))
+        .selectAll('text').style('font-size', '8px');
+      ig.selectAll('.domain').attr('stroke', '#ccc');
+
+      var pred = gpPredict1d(obsX, obsY, xStar, clickLs, bestSf2, clickNs * clickNs);
+
+      var areaData = xStar.map(function(x, i) {
+        return { x: x, lo: pred.mean[i] - 2 * pred.std[i], hi: pred.mean[i] + 2 * pred.std[i] };
+      });
+      var area = d3.area()
+        .x(function(d) { return xS(d.x); })
+        .y0(function(d) { return yS(Math.max(24, d.lo)); })
+        .y1(function(d) { return yS(Math.min(28.5, d.hi)); });
+      ig.append('path').datum(areaData).attr('d', area)
+        .attr('fill', '#333').attr('opacity', 0.12);
+
+      var line = d3.line()
+        .x(function(d, i) { return xS(xStar[i]); })
+        .y(function(d) { return yS(d); });
+      ig.append('path').datum(pred.mean).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#333').attr('stroke-width', 1.5);
+
+      ig.selectAll('.click-dot').data(lmlSubObs).enter().append('circle')
+        .attr('cx', function(d) { return xS(d[0]); })
+        .attr('cy', function(d) { return yS(d[1]); })
+        .attr('r', 2.5).attr('fill', '#e8590c').attr('stroke', 'white').attr('stroke-width', 0.5);
+
+      bg.append('text').attr('x', 6).attr('y', 14)
+        .style('font-size', '10px').style('font-weight', 'bold').style('fill', '#333')
+        .text('Click result');
+      bg.append('text').attr('x', INSET_W - 4).attr('y', 14)
+        .attr('text-anchor', 'end').style('font-size', '9px').style('fill', '#888')
+        .text('LML = ' + bestLml.toFixed(1));
+      bg.append('text').attr('x', INSET_W - 4).attr('y', INSET_H - 4)
+        .attr('text-anchor', 'end').style('font-size', '8px').style('fill', '#999')
+        .text('\u2113=' + clickLs.toFixed(2) + ' \u03C3\u00B2f=' + bestSf2.toFixed(2) + ' \u03C3n=' + clickNs.toFixed(3));
+
+      // Close button
+      bg.append('text').attr('x', INSET_W - 10).attr('y', 12)
+        .style('font-size', '14px').style('fill', '#999').style('cursor', 'pointer')
+        .text('\u00D7')
+        .on('click', function(e) { e.stopPropagation(); clickInsetG.remove(); clickInsetG = null; });
+    });
+
+  })();
+  </script>
+
+  <p>
+    This objective balances fitting the data with maintaining simplicity.
+    We don't need separate validation sets or hand-tuned regularization&mdash;the marginal likelihood inherently prefers
+    smooth functions unless the data strongly demands roughness.
+  </p>
+  <p>
+    This optimization is often performed numerically using gradient-based methods
+    (conjugate gradient, Adam, etc.). The optimization is typically fast because even with thousands of observations,
+    the log determinant and inverse are computed efficiently using Cholesky decomposition.
+  </p>
+
+  <p>
+    However, marginal likelihood optimization can be unreliable when observations are sparse or
+    clustered&mdash;the optimizer may fit the available data well but produce poor predictions
+    elsewhere. In such cases, it is often better to set hyperparameters using domain expertise.
+    For example, in oceanography the lengthscale is commonly prescribed based on the local Rossby
+    radius of deformation (~10&nbsp;km at high latitudes to ~200&nbsp;km in the tropics), ensuring
+    the interpolation respects known dynamical scales even when the data alone cannot constrain them.
+  </p>
+
+  <!-- ======================== PRACTICAL TIPS ======================== -->
+  <h2>Practical Considerations for SST Interpolation</h2>
+
+  <h3>Data Preprocessing</h3>
+  <p>
+    Before fitting a GP to real SST data, several preprocessing steps improve results:
+  </p>
+  <ul>
+    <li><strong>Normalization:</strong> Center observations to mean zero and scale to unit variance. This improves
+    numerical stability and makes hyperparameter values more interpretable (a signal variance of ~1 is typical).</li>
+    <li><strong>Removing trends:</strong> If the data has a strong seasonal trend (warm in summer, cold in winter),
+    remove it first. GPs work best on deviations from a mean trend rather than the raw signal.</li>
+    <li><strong>Outlier detection:</strong> Real SST datasets can have bad observations due to instrument failure or
+    calibration issues. Robust outlier detection (e.g., using Huber loss) prevents fitting to false spikes.</li>
+    <li><strong>Spatial domain definition:</strong> Define clear boundaries for your region (e.g., Pacific Ocean west
+    of 120&deg;W, east of 120&deg;E). Handle boundary effects carefully&mdash;GPs assume smoothness, but abrupt coastlines violate
+    this.</li>
+  </ul>
+
+  <h3>Computational Considerations</h3>
+  <p>
+    GPs scale as <d-math>O(n^3)</d-math> in the number of observations due to matrix inversion. For
+    large SST datasets (satellite data can have millions of points), this becomes prohibitive. Common solutions:
+  </p>
+  <ul>
+    <li><strong>Sparse approximations:</strong> Use a subset of "inducing points" to approximate the full covariance.
+    The Sparse Variational GP and FITC approximation reduce complexity to <d-math>O(nm^2)</d-math>
+    where <d-math>m \ll n</d-math>.</li>
+    <li><strong>Local GPs:</strong> Divide the domain into tiles and fit separate GPs to each. This is memory-efficient
+    but can create discontinuities at tile boundaries.</li>
+    <li><strong>Mini-batch training:</strong> Use stochastic gradient descent with subsets of data, updating
+    hyperparameters iteratively rather than globally optimizing.</li>
+  </ul>
+
+  <h3>Handling Seasonal Variability</h3>
+  <p>
+    SST has strong seasonal cycles. The mean state differs between winter and summer, and variability patterns shift.
+    Approaches include:
+  </p>
+  <ul>
+    <li><strong>Separate models per season:</strong> Train independent GPs for January, April, July, October. This
+    allows each season's dynamics to be captured fully.</li>
+    <li><strong>Temporal GPs:</strong> Extend the GP to include time as a dimension, with a separable kernel
+    <d-math>k(\mathbf{x}, t; \mathbf{x}', t') = k_{\text{space}}(\mathbf{x}, \mathbf{x}') \cdot k_{\text{time}}(t, t')</d-math>.
+    This is powerful but computationally heavier.</li>
+    <li><strong>Basis function expansion:</strong> Use a finite set of seasonal modes (e.g., first 5 EOFs of
+    climatological SST variability) as a mean function for the GP.</li>
+  </ul>
+
+  <h3>Validation and Uncertainty Quantification</h3>
+  <p>
+    Always validate your GP model:
+  </p>
+  <ul>
+    <li><strong>Cross-validation:</strong> Hold out 10&ndash;20% of observations, train the GP on the rest, and measure
+    prediction error. The negative log likelihood of held-out data is a good metric.</li>
+    <li><strong>Prediction intervals:</strong> The posterior variance provides uncertainty. Check that ~95% of
+    held-out observations fall within the 95% confidence interval. If not, your uncertainty is miscalibrated.</li>
+    <li><strong>Residual analysis:</strong> Plot residuals (true value minus prediction) against position, magnitude,
+    and other features. Patterns indicate systematic errors in your model.</li>
+  </ul>
+
+  <aside>
+    <strong>Real-world example:</strong> NOAA's Optimum Interpolation Sea Surface Temperature (OISST) is a daily,
+    global 0.25&deg; resolution dataset that combines observations from satellites, ships, buoys, and Argo floats using
+    optimum interpolation&mdash;a technique closely related to Gaussian Process regression. OISST applies a bias
+    adjustment for satellite data relative to in situ measurements, then uses spatial correlation functions to
+    interpolate onto a regular grid with built-in uncertainty estimation.
+  </aside>
+
+  <!-- ======================== ADVANCED: MULTIPLE KERNELS ======================== -->
+  <h2>Advanced Topics: Beyond Simple Kernels</h2>
+
+  <h3>Compositional Kernels</h3>
+  <p>
+    Real SST has structure at multiple scales simultaneously. A single RBF kernel is limited. More expressive models
+    use sums and products of kernels:
+  </p>
+  <ul>
+    <li><strong>Sum of kernels:</strong> <d-math>k = k_1 + k_2</d-math> models phenomena at different
+    scales. Example: <d-math>k = \sigma_1^2 \exp(-r^2/2\ell_1^2) + \sigma_2^2 \exp(-r^2/2\ell_2^2)</d-math>
+    captures both local variability (short lengthscale) and regional patterns (long lengthscale).</li>
+    <li><strong>Product of kernels:</strong> <d-math>k = k_1 \cdot k_2</d-math> models interactions.
+    For spatio-temporal data, <d-math>k(\mathbf{x}, t; \mathbf{x}', t') = k_{\text{space}}(\mathbf{x}, \mathbf{x}') \cdot k_{\text{time}}(t, t')</d-math>
+    means correlation decays both with distance and time.</li>
+    <li><strong>Spectral mixtures:</strong> A weighted sum of sinusoidal kernels can approximate complex spectra. This
+    is powerful for capturing multi-scale SST variability.</li>
+  </ul>
+
+  <h3>Non-Stationary Kernels</h3>
+  <p>
+    SST properties vary regionally. The tropics have different dynamics than mid-latitudes. Non-stationary kernels allow
+    lengthscale and variance to vary spatially:
+  </p>
+
+  <d-math block>
+    k(\mathbf{x}, \mathbf{x}') = \sigma_f^2(\mathbf{x})\, \exp\!\left(-\frac{\|\mathbf{x} - \mathbf{x}'\|^2}{2\ell^2(\mathbf{x})}\right)
+    \tag{7}
+  </d-math>
+
+  <p>
+    where <d-math>\ell(\mathbf{x})</d-math> is a spatially-varying lengthscale. This is more complex to
+    implement but captures regional differences in oceanographic dynamics.
+  </p>
+
+  <h3>Anisotropic Kernels</h3>
+  <p>
+    The isotropic RBF kernel assumes that correlation decays at the same rate in all directions.
+    In the ocean, this is rarely the case: currents, coastlines, and Coriolis effects create
+    preferred directions of correlation. An anisotropic kernel replaces the single lengthscale
+    with a matrix:
+  </p>
+
+  <d-math block>
+    k(\mathbf{x}, \mathbf{x}') = \sigma_f^2 \exp\!\left(-\tfrac{1}{2}(\mathbf{x} - \mathbf{x}')^\top \boldsymbol{\Lambda}^{-1} (\mathbf{x} - \mathbf{x}')\right)
+    \tag{8}
+  </d-math>
+
+  <p>
+    where <d-math>\boldsymbol{\Lambda}</d-math> is a positive-definite matrix whose eigenvectors
+    define the principal directions of correlation and whose eigenvalues set the lengthscales along
+    those directions. For SST, zonal (east&ndash;west) correlation lengths are typically much longer
+    than meridional (north&ndash;south) ones, reflecting the dominant direction of ocean currents
+    and atmospheric forcing. Anisotropic kernels can also be made spatially varying, so that
+    the preferred direction rotates to follow local current geometry or coastline orientation.
+  </p>
+
+  <!-- ======================== CHALLENGES ======================== -->
+  <h2>Challenges and Limitations</h2>
+
+  <h3>Non-Stationarity in a Changing Climate</h3>
+  <p>
+    Both GP regression and classical OI assume that the covariance structure is fixed and known (or
+    learnable from available data). In practice, ocean variability is non-stationary: the spatial
+    correlation structure of SST changes with season, ENSO phase, and long-term climate trends.
+    A lengthscale estimated from 1990s data may not describe 2020s variability well. Locally
+    stationary approaches&mdash;fitting separate covariance parameters in moving windows of space
+    and time <d-cite key="kuusela_locally_2018"></d-cite>&mdash;offer one path forward, but require
+    enough data in each window to estimate parameters reliably. In a warming climate where the
+    background state itself is shifting, static covariance assumptions become increasingly
+    problematic, and methods that can adapt their covariance structure over time are essential.
+  </p>
+
+  <h3>Smoothing Over Important Gradients</h3>
+  <p>
+    GPs with isotropic kernels produce smooth interpolations by design. While this is usually
+    desirable, it can be problematic near ocean fronts, eddies, and boundary currents where
+    sharp temperature gradients carry dynamical significance. The posterior mean of a GP will
+    inevitably smooth across a front if the kernel lengthscale is comparable to or larger than
+    the frontal width, blurring a 2&deg;C gradient over 50&nbsp;km into a gentle slope. This is not
+    just a cosmetic issue&mdash;smoothed gradients underestimate geostrophic currents and
+    misrepresent the energetics of the flow. Potential remedies include using shorter
+    lengthscales (at the cost of noisier fields away from fronts), barrier kernels that
+    respect coastlines and known frontal positions, or physics-informed kernels such as the
+    Helmholtz decomposition approach of Berlinghieri et al. <d-cite key="berlinghieri_gaussian_2023"></d-cite>,
+    which encodes divergence and rotation structure directly into the GP prior.
+  </p>
+
+  <h3>Multi-Fidelity Methods</h3>
+  <p>
+    Real oceanographic datasets often combine observations from multiple sources with very
+    different accuracies, resolutions, and spatial coverage: high-resolution but cloud-contaminated
+    satellite SST, sparse but accurate in situ measurements from buoys and ships, and
+    coarse-resolution model output that provides complete spatial coverage. Rather than treating
+    all sources equally or discarding lower-quality data, multi-fidelity GP frameworks
+    systematically exploit correlations between data sources of varying fidelity.
+    Babaee et al. <d-cite key="babaee_multifidelity_2020"></d-cite> demonstrated this approach
+    for SST in Massachusetts and Cape Cod Bays, using autoregressive GP schemes that combine
+    satellite imagery with in situ measurements to produce predictions with calibrated uncertainty
+    maps. Multi-fidelity methods are especially valuable in coastal regions where satellite
+    coverage is poor and the interplay between different data sources matters most.
+  </p>
+
+  <!-- ======================== CONCLUSION ======================== -->
+  <h2>Conclusion</h2>
+  <p>
+    Gaussian Processes provide a principled, flexible framework for spatial interpolation of sea surface temperature.
+    By modeling SST as a random function and conditioning on observations, GPs deliver not just point estimates but
+    full posterior distributions with quantified uncertainty&mdash;essential for decision-making in climate and oceanography.
+  </p>
+  <p>
+    The key hyperparameters&mdash;lengthscale, signal variance, and noise variance&mdash;have clear physical interpretations.
+    Lengthscale reflects ocean dynamical scales; signal variance captures the expected range of temperature variation;
+    noise variance accounts for measurement error. Interactive tuning and visualization of these parameters builds intuition.
+  </p>
+  <p>
+    The marginal likelihood objective elegantly balances fitting observed data with maintaining simplicity, avoiding
+    overfitting without need for external validation. For large datasets, sparse approximations make GPs tractable.
+    Advanced extensions using composite kernels and spatially-varying parameters push
+    GPs toward state-of-the-art climate modeling.
+  </p>
+  <p>
+    While we have demonstrated these methods using sea surface temperature, the same optimal interpolation
+    and GP framework underpins gridded products across the ocean and climate sciences. Sea surface height
+    from satellite altimeters, subsurface temperature and salinity from Argo floats, dissolved oxygen
+    concentrations, ocean color and chlorophyll, and atmospheric reanalysis fields are all routinely
+    produced using variants of the techniques described here. NOAA's OISST, the Roemmich&ndash;Gilson Argo
+    climatology, and AVISO altimetry maps all rely on optimum interpolation at their core. The specific
+    kernel, lengthscale, and noise characteristics differ by variable and observing system, but the
+    mathematical machinery&mdash;covariance modeling, posterior inference, and hyperparameter
+    optimization&mdash;remains the same.
+  </p>
+  <p>
+    Whether you're reconstructing historical SST for climate analysis, nowcasting temperature for fisheries management,
+    or assimilating observations into weather models, Gaussian Processes remain one of the most elegant and effective
+    tools in your toolbox. The interactive visualizations above should give you intuition for how each component works.
+    The next step is implementing these methods on real data and seeing how they perform in your application.
+  </p>
+
+  <!-- ======================== OI NOTATION ======================== -->
+  <h2>Comparison with Optimal Interpolation</h2>
+
+  <p>
+    For simplicity, we follow the notation from Ide et al. (1997). However, many different notations
+    exist in the literature.
+  </p>
+
+  <ul>
+    <li><d-math>\mathbf{x}</d-math>: true state vector</li>
+    <li><d-math>\mathbf{x}_b</d-math>: background state (prior mean)</li>
+    <li><d-math>\mathbf{B}</d-math>: background error covariance matrix</li>
+    <li><d-math>\mathbf{y}</d-math>: observation vector</li>
+    <li><d-math>\mathbf{H}</d-math>: observation operator</li>
+    <li><d-math>\mathbf{R}</d-math>: observation error covariance</li>
+    <li><d-math>\mathbf{d} = \mathbf{y} - \mathbf{H}\mathbf{x}_b</d-math>: innovation</li>
+    <li><d-math>\mathbf{x}_a</d-math>: analysis (posterior mean)</li>
+    <li><d-math>\mathbf{P}_a</d-math>: posterior error covariance</li>
+  </ul>
+
+  <p>
+    While notational conventions vary, nearly all OI literature uses <d-math>\mathbf{x}</d-math>
+    for the state vector and <d-math>\mathbf{y}</d-math> for the observation vector&mdash;a sharp
+    distinction from GPR, which we discuss in the comparison below.
+  </p>
+
+  <h3>Formulation</h3>
+
+  <p>
+    Optimal interpolation is a data assimilation method grounded in Bayesian inference. The goal is
+    to estimate the most probable state <d-math>\mathbf{x}</d-math> of a physical system, given a
+    prior (or background) estimate <d-math>\mathbf{x}_b</d-math> and a set of noisy observations
+    <d-math>\mathbf{y}</d-math>. OI assumes Gaussian statistics for both the prior and the
+    observation noise. Some consider OI a form of objective analysis&mdash;an objective, systematic
+    approach to producing gridded datasets from sparse or irregular observations.
+  </p>
+
+  <p>We assume the following statistical models:</p>
+
+  <d-math block>
+    \mathbf{x} \sim \mathcal{N}(\mathbf{x}_b,\; \mathbf{B})
+    \qquad\qquad
+    \mathbf{y}\,|\,\mathbf{x} \sim \mathcal{N}(\mathbf{H}\mathbf{x},\; \mathbf{R})
+  </d-math>
+
+  <p>
+    Here <d-math>\mathbf{B}</d-math> is the prior (background) covariance matrix representing
+    uncertainty in the background field, and <d-math>\mathbf{R}</d-math> is the observation error
+    covariance. In practice, these matrices are set according to expert knowledge about the system,
+    empirical correlations, or physical reasoning. The operator <d-math>\mathbf{H}</d-math>
+    maps the state space to observation space.
+  </p>
+
+  <p>Bayes' theorem yields the posterior (analysis) mean and covariance:</p>
+
+  <d-math block>
+    \mathbf{x}_a = \mathbf{x}_b + \mathbf{K}\bigl(\mathbf{y} - \mathbf{H}\mathbf{x}_b\bigr)
+  </d-math>
+
+  <d-math block>
+    \mathbf{K} = \mathbf{B}\mathbf{H}^\top\bigl(\mathbf{H}\mathbf{B}\mathbf{H}^\top + \mathbf{R}\bigr)^{-1}
+  </d-math>
+
+  <d-math block>
+    \mathbf{P}_a = \bigl(\mathbf{I} - \mathbf{K}\mathbf{H}\bigr)\mathbf{B}
+  </d-math>
+
+  <p>
+    The gain matrix <d-math>\mathbf{K}</d-math> determines how much weight is given to the
+    innovation&mdash;the discrepancy between the observations and the background projected into
+    observation space. It balances confidence in the observations (via <d-math>\mathbf{R}</d-math>)
+    against confidence in the background (via <d-math>\mathbf{B}</d-math>). A larger
+    <d-math>\mathbf{R}</d-math> results in more reliance on the background, while a smaller
+    <d-math>\mathbf{R}</d-math> leads to more reliance on the observations.
+  </p>
+
+  <p>
+    OI produces a linear estimate that minimizes the expected mean squared error under Gaussian
+    assumptions. Intuitively, the analysis <d-math>\mathbf{x}_a</d-math> is a weighted average
+    between the prior estimate and the observations, where the weights depend on relative
+    uncertainties. In regions with sparse observational coverage, the analysis is heavily dictated
+    by the prescribed background state and its associated covariance <d-math>\mathbf{B}</d-math>.
+    By definition, OI is only truly &ldquo;optimal&rdquo; when the exact statistical properties of
+    the system are known. In practice, the background error covariance is frequently constructed
+    using idealized formulations (such as scaling spatial decorrelation lengths to the local Rossby
+    radius of deformation). When these idealized statistics differ too much from the truth,
+    predictions in data-sparse areas become highly unreliable.
+  </p>
+
+  <h3>Variational Interpretation</h3>
+
+  <p>OI can also be interpreted as the solution to a minimization problem with cost function:</p>
+
+  <d-math block>
+    J(\mathbf{x}) = (\mathbf{y} - \mathbf{H}\mathbf{x})^\top \mathbf{R}^{-1} (\mathbf{y} - \mathbf{H}\mathbf{x})
+    + (\mathbf{x} - \mathbf{x}_b)^\top \mathbf{B}^{-1} (\mathbf{x} - \mathbf{x}_b)
+  </d-math>
+
+  <p>
+    The first term penalizes mismatch with observations weighted by observation uncertainty; the
+    second penalizes deviation from the background weighted by background uncertainty. Minimizing
+    <d-math>J(\mathbf{x})</d-math> yields the analysis <d-math>\mathbf{x}_a</d-math>. This
+    variational view is equivalent to the Bayesian formulation under Gaussian assumptions.
+  </p>
+
+  <p>
+    OI can be interpreted as a special case of the Kalman filter where there is no time evolution
+    of the state, only an update step using new observations. It is also algebraically equivalent
+    to 3D-Var (three-dimensional variational data assimilation) under linear and Gaussian
+    assumptions <d-cite key="lorenc_analysis_1986"></d-cite>. Because OI is strictly an
+    interpolation method used when no forward dynamical model is assumed or computationally
+    feasible, it cannot dynamically evolve the background covariance. Instead, the covariance must
+    be prescribed using historical observations, empirical fitting, or expert domain knowledge.
+  </p>
+
+  <h3>GPR vs. OI at a Glance</h3>
+
+  <style>
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 1.5rem 0;
+    }
+    .comparison-table th,
+    .comparison-table td {
+      border: 1px solid #ddd;
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+    }
+    .comparison-table th {
+      background: #f5f5f5;
+      font-weight: 600;
+    }
+    .comparison-table tr:nth-child(even) td {
+      background: #fafafa;
+    }
+  </style>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Concept</th>
+        <th>GPR</th>
+        <th>OI</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Prior mean</td>
+        <td><d-math>m(\mathbf{X})</d-math></td>
+        <td><d-math>\mathbf{x}_b</d-math></td>
+      </tr>
+      <tr>
+        <td>Covariance</td>
+        <td><d-math>k(\cdot, \cdot)</d-math></td>
+        <td><d-math>\mathbf{B}</d-math></td>
+      </tr>
+      <tr>
+        <td>Covariance estimation</td>
+        <td>Learned (marginal likelihood)</td>
+        <td>Prescribed (domain knowledge)</td>
+      </tr>
+      <tr>
+        <td>Observation noise</td>
+        <td><d-math>\sigma_n^2 \mathbf{I}</d-math></td>
+        <td><d-math>\mathbf{R}</d-math></td>
+      </tr>
+      <tr>
+        <td>Observation operator</td>
+        <td>Implicit (identity)</td>
+        <td><d-math>\mathbf{H}</d-math></td>
+      </tr>
+      <tr>
+        <td>Posterior mean</td>
+        <td><d-math>\bar{\mathbf{f}}_*</d-math></td>
+        <td><d-math>\mathbf{x}_a</d-math></td>
+      </tr>
+      <tr>
+        <td>Posterior covariance</td>
+        <td><d-math>\mathrm{cov}(\mathbf{f}_*)</d-math></td>
+        <td><d-math>\mathbf{P}_a</d-math></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    While used in different domains, GPR and OI are fundamentally similar: both provide Bayesian
+    estimates from uncertain observations. GPR generalizes OI by allowing learned kernel structures
+    and flexible prior means, whereas OI often leverages domain-specific knowledge for covariance
+    specification&mdash;and prescribing the covariance manually is less computationally expensive
+    than training.
+  </p>
+
+  <p>
+    One of the main sources of confusion when comparing GPR and OI is that the variables
+    <d-math>\mathbf{x}</d-math> and <d-math>\mathbf{y}</d-math> refer to different quantities in
+    each method, and this distinction should be noted carefully. In GPR the goal is
+    <em>regression</em>, so the notation follows the usual machine-learning convention:
+    <d-math>\mathbf{x}</d-math> represents the <em>input variables</em> (regressors) and
+    <d-math>\mathbf{y}</d-math> represents the <em>predicted quantity</em> (regressand). In
+    contrast, OI is a <em>state-estimation</em> method: <d-math>\mathbf{x}</d-math> denotes the
+    <em>state we want to estimate</em>, and <d-math>\mathbf{y}</d-math> denotes the
+    <em>observations used to estimate that state</em>.
+  </p>
+
+</d-article>
+
+<d-appendix>
+  <h3>Interactive Resources</h3>
+  <ul>
+    <li><a href="https://distill.pub/2019/visual-exploration-gaussian-processes/">A Visual Exploration of Gaussian Processes</a>&mdash;G&ouml;rtler, Kehlbeck &amp; Deussen (2019). The Distill article that inspired many of the interactive visualizations in this tutorial.</li>
+    <li><a href="https://infallible-thompson-49de36.netlify.app/">A Practical Guide to Gaussian Processes</a>&mdash;a companion deployment with additional interactive figures including the marginal likelihood landscape.</li>
+    <li><a href="https://www.infinitecuriosity.org/vizgp/">VizGP</a>&mdash;an interactive tool for building intuition about GP kernels and their effect on predictions.</li>
+    <li><a href="https://mlatcl.github.io/gpss/lectures/06-approximate-gps.html">Approximate GPs (GPSS Lectures)</a>&mdash;lecture notes from the Gaussian Process Summer School covering sparse and scalable GP methods.</li>
+  </ul>
+
+  <h3>Further Reading</h3>
+  <ul>
+    <li><strong>Gaussian Processes for Machine Learning</strong> <d-cite key="rasmussen_gaussian_2006"></d-cite>&mdash;the definitive reference on GP theory and practice, freely available online.</li>
+    <li><strong>Statistics for Spatial Data</strong> <d-cite key="cressie_spatial_1993"></d-cite>&mdash;the foundational text on geostatistics, kriging, and spatial prediction.</li>
+    <li><strong>Objective Analysis of Meteorological Fields</strong> <d-cite key="gandin_objective_1965"></d-cite>&mdash;Gandin's seminal work formalizing optimum interpolation for meteorology.</li>
+    <li><strong>Explaining and Connecting Kriging with GP Regression</strong> <d-cite key="marinescu_explaining_2024"></d-cite>&mdash;a thorough mathematical comparison of kriging variants and GP regression.</li>
+    <li><strong>Analysis Methods for NWP</strong> <d-cite key="lorenc_analysis_1986"></d-cite>&mdash;Lorenc's unifying perspective connecting OI, kriging, variational methods, and Kalman filtering.</li>
+    <li><strong>A Bayesian Tutorial for Data Assimilation</strong> <d-cite key="wikle_bayesian_2007"></d-cite>&mdash;links optimal interpolation, kriging, Kalman filtering, and Bayesian inference.</li>
+  </ul>
+
+  <p>
+    This interactive article was created to make Gaussian Process methodology accessible to climate and ocean scientists.
+    All visualizations are rendered client-side in JavaScript; no data is transmitted to external servers.
+  </p>
+
+  <d-bibliography>
+    <script type="text/bibliography">
+@book{rasmussen_gaussian_2006,
+  title={Gaussian Processes for Machine Learning},
+  author={Rasmussen, Carl Edward and Williams, Christopher K. I.},
+  series={Adaptive Computation and Machine Learning},
+  year={2006},
+  publisher={MIT Press},
+  address={Cambridge, MA}
+}
+@article{krige_statistical_1951,
+  title={A statistical approach to some basic mine valuation problems on the Witwatersrand},
+  author={Krige, Daniel G.},
+  journal={Journal of the South African Institute of Mining and Metallurgy},
+  volume={52},
+  pages={201--203},
+  year={1951}
+}
+@article{matheron_principles_1963,
+  title={Principles of geostatistics},
+  author={Matheron, Georges},
+  journal={Economic Geology},
+  volume={58},
+  number={8},
+  pages={1246--1266},
+  year={1963},
+  doi={10.2113/gsecongeo.58.8.1246}
+}
+@incollection{cressie_spatial_1993,
+  title={Spatial Prediction and Kriging},
+  author={Cressie, Noel A. C.},
+  booktitle={Statistics for Spatial Data},
+  publisher={John Wiley and Sons},
+  year={1993},
+  pages={105--209},
+  doi={10.1002/9781119115151.ch3}
+}
+@book{ripley_spatial_2005,
+  title={Spatial Statistics},
+  author={Ripley, Brian D.},
+  publisher={John Wiley and Sons},
+  year={2005}
+}
+@article{kimeldorf_correspondence_1970,
+  title={A Correspondence Between Bayesian Estimation on Stochastic Processes and Smoothing by Splines},
+  author={Kimeldorf, George S. and Wahba, Grace},
+  journal={The Annals of Mathematical Statistics},
+  volume={41},
+  number={2},
+  pages={495--502},
+  year={1970}
+}
+@article{kolmogorov_interpolirovanie_1941,
+  title={Interpolation and extrapolation of stationary random sequences},
+  author={Kolmogorov, A. N.},
+  journal={Izvestia AN SSSR, Seriya Matematicheskaya},
+  volume={5},
+  number={1},
+  year={1941}
+}
+@book{wiener_extrapolation_1949,
+  title={Extrapolation, Interpolation, and Smoothing of Stationary Time Series},
+  author={Wiener, Norbert},
+  publisher={MIT Press},
+  year={1949}
+}
+@misc{marinescu_explaining_2024,
+  title={Explaining and Connecting Kriging with Gaussian Process Regression},
+  author={Marinescu, Marius},
+  year={2024},
+  url={https://arxiv.org/abs/2408.02331},
+  doi={10.48550/arXiv.2408.02331}
+}
+@book{gandin_objective_1965,
+  title={Objective Analysis of Meteorological Fields},
+  author={Gandin, L. S.},
+  publisher={Israel Program for Scientific Translations},
+  address={Jerusalem},
+  year={1965}
+}
+@article{bretherton_technique_1976,
+  title={A technique for objective analysis and design of oceanographic experiments applied to MODE-73},
+  author={Bretherton, Francis P. and Davis, Russ E. and Fandry, C. B.},
+  journal={Deep Sea Research and Oceanographic Abstracts},
+  volume={23},
+  number={7},
+  pages={559--582},
+  year={1976},
+  doi={10.1016/0011-7471(76)90001-2}
+}
+@article{lorenc_analysis_1986,
+  title={Analysis methods for numerical weather prediction},
+  author={Lorenc, A. C.},
+  journal={Quarterly Journal of the Royal Meteorological Society},
+  volume={112},
+  number={474},
+  pages={1177--1194},
+  year={1986},
+  doi={10.1002/qj.49711247414}
+}
+@book{daley_atmospheric_1991,
+  title={Atmospheric Data Analysis},
+  author={Daley, Roger},
+  series={Cambridge Atmospheric and Space Science Series},
+  publisher={Cambridge University Press},
+  year={1991}
+}
+@incollection{thomson_chapter_2014,
+  title={Chapter 4 -- The Spatial Analyses of Data Fields},
+  author={Thomson, Richard E. and Emery, William J.},
+  booktitle={Data Analysis Methods in Physical Oceanography},
+  edition={Third},
+  publisher={Elsevier},
+  address={Boston},
+  year={2014},
+  pages={313--424},
+  doi={10.1016/B978-0-12-387782-6.00004-1}
+}
+@article{reynolds_real-time_1988,
+  title={A Real-Time Global Sea Surface Temperature Analysis},
+  author={Reynolds, Richard W.},
+  journal={Journal of Climate},
+  volume={1},
+  number={1},
+  pages={75--87},
+  year={1988}
+}
+@article{reynolds_improved_1994,
+  title={Improved Global Sea Surface Temperature Analyses Using Optimum Interpolation},
+  author={Reynolds, Richard W. and Smith, Thomas M.},
+  journal={Journal of Climate},
+  volume={7},
+  number={6},
+  pages={929--948},
+  year={1994}
+}
+@article{huang2021,
+  title={Improvements of the daily optimum interpolation sea surface temperature (DOISST) version 2.1},
+  author={Huang, Boyin and Liu, Chunying and Banzon, Viva and Freeman, Eric and Graham, Garrett and Hankins, Bill and Smith, Tom and Zhang, Huai-Min},
+  journal={Journal of Climate},
+  volume={34},
+  number={8},
+  pages={2923--2939},
+  year={2021}
+}
+@article{zhang_gaussian_2021,
+  title={A Gaussian process regression-based sea surface temperature interpolation algorithm},
+  author={Zhang, Yongshun and Feng, Miao and Zhang, Weimin and Wang, Huizan and Wang, Pinqiang},
+  journal={Journal of Oceanology and Limnology},
+  volume={39},
+  number={4},
+  pages={1211--1221},
+  year={2021},
+  doi={10.1007/s00343-020-0062-1}
+}
+@article{gortler_visual_2019,
+  title={A Visual Exploration of Gaussian Processes},
+  author={Goertler, Jochen and Kehlbeck, Rebecca and Deussen, Oliver},
+  journal={Distill},
+  volume={4},
+  number={4},
+  pages={e17},
+  year={2019},
+  doi={10.23915/distill.00017}
+}
+@misc{berlinghieri_gaussian_2023,
+  title={Gaussian processes at the Helmholtz: A more fluid model for ocean currents},
+  author={Berlinghieri, Renato and Trippe, Brian L. and Burt, David R. and Giordano, Ryan and Srinivasan, Kaushik and Ozgokmen, Tamay and Xia, Junfei and Broderick, Tamara},
+  year={2023},
+  url={http://arxiv.org/abs/2302.10364},
+  doi={10.48550/arXiv.2302.10364}
+}
+@article{park_spatiotemporal_2023,
+  title={Spatiotemporal local interpolation of global ocean heat transport using Argo floats: A debiased latent Gaussian process approach},
+  author={Park, Beomjo and Kuusela, Mikael and Giglio, Donata and Gray, Alison},
+  journal={The Annals of Applied Statistics},
+  volume={17},
+  number={2},
+  pages={1491--1520},
+  year={2023},
+  doi={10.1214/22-AOAS1679}
+}
+@article{kuusela_locally_2018,
+  title={Locally stationary spatio-temporal interpolation of Argo profiling float data},
+  author={Kuusela, Mikael and Stein, Michael L.},
+  journal={Proceedings of the Royal Society A},
+  volume={474},
+  number={2220},
+  pages={20180400},
+  year={2018},
+  doi={10.1098/rspa.2018.0400}
+}
+@article{gregory_scalable_2024,
+  title={Scalable interpolation of satellite altimetry data with probabilistic machine learning},
+  author={Gregory, William and MacEachern, Ronald and Takao, So and Lawrence, Isobel and Nab, Carmen and Deisenroth, Mark and Tsamados, Michel},
+  journal={Preprint},
+  year={2024}
+}
+@article{wikle_bayesian_2007,
+  title={A Bayesian tutorial for data assimilation},
+  author={Wikle, Christopher K. and Berliner, L. Mark},
+  journal={Physica D: Nonlinear Phenomena},
+  volume={230},
+  number={1},
+  pages={1--16},
+  year={2007},
+  doi={10.1016/j.physd.2006.09.017}
+}
+@article{stammer_ocean_2016,
+  title={Ocean Data Assimilation in Support of Climate Applications: Status and Perspectives},
+  author={Stammer, D. and Balmaseda, M. and Heimbach, P. and Koehl, A. and Weaver, A.},
+  journal={Annual Review of Marine Science},
+  volume={8},
+  number={1},
+  pages={491--518},
+  year={2016},
+  doi={10.1146/annurev-marine-122414-034113}
+}
+@article{quinonero2005,
+  title={A unifying view of sparse approximate Gaussian process regression},
+  author={Quinonero-Candela, Joaquin and Rasmussen, Carl Edward},
+  journal={Journal of Machine Learning Research},
+  volume={6},
+  pages={1939--1959},
+  year={2005}
+}
+@article{sonnewald_bridging_2021,
+  title={Bridging observations, theory and numerical simulation of the ocean using machine learning},
+  author={Sonnewald, Maike and Lguensat, Redouane and Jones, Daniel C. and Dueben, Peter D. and Brajard, Julien and Balaji, V.},
+  journal={Environmental Research Letters},
+  volume={16},
+  number={7},
+  pages={073008},
+  year={2021},
+  doi={10.1088/1748-9326/ac0eb0}
+}
+@article{roemmich_20042008_2009,
+  title={The 2004--2008 mean and annual cycle of temperature, salinity, and steric height in the global ocean from the Argo Program},
+  author={Roemmich, Dean and Gilson, John},
+  journal={Progress in Oceanography},
+  volume={82},
+  number={2},
+  pages={81--100},
+  year={2009},
+  doi={10.1016/j.pocean.2009.03.004}
+}
+@article{traon_improved_1998,
+  title={An Improved Mapping Method of Multisatellite Altimeter Data},
+  author={Le Traon, P. Y. and Nadal, F. and Ducet, N.},
+  journal={Journal of Atmospheric and Oceanic Technology},
+  volume={15},
+  number={2},
+  pages={522--534},
+  year={1998}
+}
+@article{babaee_multifidelity_2020,
+  title={A Multifidelity Framework and Uncertainty Quantification for Sea Surface Temperature in the Massachusetts and Cape Cod Bays},
+  author={Babaee, H. and Bastidas, C. and DeFilippo, M. and Chryssostomidis, C. and Karniadakis, G. E.},
+  journal={Earth and Space Science},
+  volume={7},
+  number={2},
+  pages={e2019EA000954},
+  year={2020},
+  doi={10.1029/2019EA000954}
+}
+    </script>
+  </d-bibliography>
+</d-appendix>
+
+<!-- Project JavaScript -->
+<script src="js/gp.js"></script>
+<script src="js/gp1d.js"></script>
+<script src="js/sliders.js"></script>
+<script src="js/visualizations.js"></script>
