@@ -99,6 +99,19 @@ button:hover {
     opacity: 1;
 }
 
+/* ==================== ASIDE / SIDE NOTES ==================== */
+/* Prevent tall margin notes from adding white space to the main column.
+   Distill places asides in the grid margin column but they stay in flow,
+   so a tall aside pushes subsequent content down. Float them out. */
+d-article aside {
+    float: right;
+    clear: right;
+    margin-right: -200px;
+    width: 170px;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
 /* ==================== LEGEND ==================== */
 .legend {
     font-size: 0.9rem;

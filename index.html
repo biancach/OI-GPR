@@ -47,7 +47,7 @@
 <d-article>
 
   <!-- ======================== HERO: REAL MODIS SST DATA ======================== -->
-  <figure id="hero" class="l-page">
+  <figure id="hero" class="l-body-outset">
     <div id="sst-hero-container" style="position:relative; background:#0f1529; border-radius:8px; overflow:hidden;">
       <div id="sst-hero-loading" style="text-align:center; padding:3rem; color:#888;">Loading MODIS SST data...</div>
       <canvas id="sst-hero-map"></canvas>
@@ -229,6 +229,7 @@
 
   <!-- ======================== COMBINED DEMO: ALL THREE SLIDERS ======================== -->
 
+  <p>This tutorial explores Gaussian Process regression in the context of spatial interpolation of geophysical fields.</p>
 
   <figure class="l-body-outset">
     <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px; padding:0 65px;">
@@ -259,50 +260,53 @@
     </div>
     -->
     <figcaption>
-      Combined hyperparameter explorer. Adjust any slider to see the effect on the GP fit.
+      GP regression fit for SST observations at 6&deg;N (MODIS Aqua, March 3 2026).
     </figcaption>
   </figure>
 
   <!-- ======================== INTRODUCTION ======================== -->
   <h2>Introduction</h2>
   <p>
-    Understanding the distribution and variability of sea surface temperature (SST) across the Pacific Ocean
-    is fundamental to climate science, weather prediction, and ocean ecology. 
-    <!-- something about pattern effect, convection, clouds -->
+    Understanding the distribution and variability of sea surface temperature (SST) 
+    is fundamental to climate science, weather prediction, and ocean ecology.
+    Yet the choices we make when interpolating observations into gridded products have real consequences:
+    satellite-era SST trends differ substantially across widely used datasets, with decadal warming rates
+    varying by nearly a factor of two depending on the interpolation method
+    <d-cite key="menemenlis_consequential_2025"></d-cite>. Similar sensitivities arise
+    for dissolved oxygen climatologies, where mapping methodology is a dominant source of disagreement
+    among observation-based estimates <d-cite key="ito_assessing_2025"></d-cite>.
   </p>
   <p>
-    This is where <strong>spatial interpolation</strong> becomes essential. Given sparse,
+    This is where understanding <strong>spatial interpolation</strong> becomes essential. Given sparse,
     noisy observations of SST at discrete locations, we need methods that can estimate temperature at unobserved
-    locations <em>and quantify the uncertainty in those estimates</em>. 
+    locations <em>and quantify the uncertainty in those estimates</em>, while understanding
+    how methodological choices shape the results.
   </p>
   <p>
     Gaussian Processes (GPs) are a powerful class of models that treat the unknown SST field as a continuous
     random function. They encode prior beliefs about smoothness and spatial correlation through covariance
     functions, then condition these beliefs on observed data to produce predictions with quantified uncertainty. 
     The mathematical formulation for Gaussian Process Regression is identical to Optimal Interpolation, a popular
-    interpolation method in Earth sciences. This tutorial will walk you through the theory and practice of using GPs 
-    for interpolation, with interactive visualizations showing how each component affects the final predictions.
+    interpolation method in Earth sciences. The interactive visualizations below illustrate how each hyperparameter shapes the interpolation.
   </p>
 
   <!-- ======================== THE PROBLEM ======================== -->
   <h2>The Spatial Interpolation Problem</h2>
   <p>
-    Imagine you are tasked with reconstructing the temperature field across the entire Pacific Ocean. 
-    You have temperature observations <d-math>y_1, y_2, \ldots, y_n</d-math>
-    at <d-math>n</d-math> locations <d-math>\mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n</d-math>,
-    where each location is a 2D coordinate (latitude, longitude). Your goal is to
-    estimate the temperature function <d-math>f(\mathbf{x})</d-math> everywhere across the ocean,
-    accounting for:
+    The goal is to reconstruct a temperature field from sparse, noisy measurements.
+    Each observation <d-math>y_i</d-math> is a measured value (e.g. SST) at location
+    <d-math>\mathbf{x}_i</d-math>, where <d-math>\mathbf{x}</d-math> is a spatial coordinate
+    (e.g. longitude, or latitude/longitude, or latitude/longitude/time).
+    Given <d-math>n</d-math> such observations, we want to estimate the underlying field
+    <d-math>f(\mathbf{x})</d-math> everywhere, where <d-math>y_i = f(\mathbf{x}_i) + \varepsilon_i</d-math>
+    and <d-math>\varepsilon_i</d-math> is measurement noise. This requires accounting for
+    spatial correlation, incomplete coverage, and uncertainty.
   </p>
-  <ul>
-    <li><strong>Spatial correlation:</strong> Nearby locations tend to have similar temperatures due to ocean
-    currents, heat transport, and mixing</li>
-    <li><strong>Measurement noise:</strong> Instruments have error, and satellite measurements can be affected
-    by clouds and calibration issues</li>
-    <li><strong>Incomplete data:</strong> We have observations only at specific points; large regions have no data</li>
-    <li><strong>Uncertainty quantification:</strong> We need not just point estimates but confidence intervals or
-    full probability distributions</li>
-  </ul>
+  <p>
+    Consider first the 1D case: SST along a single latitude (6&deg;N) across the Pacific,
+    where <d-math>\mathbf{x}</d-math> is simply longitude.
+    Satellite observations are available at some longitudes but missing at others due to cloud cover.
+  </p>
 
   <figure class="l-body-outset">
     <div id="obs-plot" style="width:100%; height:400px;"></div>
@@ -313,9 +317,11 @@
   </figure>
 
   <p>
-    The same effect is visible in 2D. Below are raw satellite observations in a
-    small subdomain (1&ndash;6&deg;N, 133&ndash;128&deg;W). About half the grid cells are missing
-    due to cloud cover.
+    The same problem extends to 2D, where <d-math>\mathbf{x} = (\text{lat}, \text{lon})</d-math>.
+    Below are raw satellite observations in a
+    small subdomain (1&ndash;6&deg;N, 133&ndash;128&deg;W), where about half the grid cells are missing
+    due to cloud cover. Throughout this tutorial, we use the 1D cross-section to build intuition
+    and the 2D subdomain to show how the same ideas generalize spatially.
   </p>
 
   <figure class="l-body-outset">
@@ -324,7 +330,7 @@
     </div>
     <figcaption>
       Raw MODIS SST observations (0.5&deg; bins, March 4 2026). 62 of 121 grid cells have data (~51%).
-      Dark cells are where clouds blocked the satellite&mdash;the GP will fill these in.
+      Dark cells are where clouds blocked the satellite. The GP will fill these in.
     </figcaption>
   </figure>
 
@@ -463,16 +469,11 @@
     the marginal variance of temperature</li>
   </ul>
 
-  <aside>
-    <strong>Physical insight:</strong> SST correlation scales vary with ocean dynamics&mdash;decaying
-    over 100&ndash;500&nbsp;km in the tropics but persisting over 1000+&nbsp;km in mid-latitudes
-    where large-scale eddies and gyres dominate.
-  </aside>
 
   <!-- ======================== COVARIANCE FUNCTIONS ======================== -->
   <h2>Covariance Functions and Hyperparameters</h2>
   <p>
-    We parametrize our covariance function using a few interpretable hyperparameters. The most common choice
+    The covariance function is parametrized by a few interpretable hyperparameters. The most common choice
     is the Radial Basis Function (RBF) kernel, also called squared exponential:
   </p>
 
@@ -606,10 +607,10 @@
   </script>
 
   <p>
-    This visualization makes physical sense: if you know the temperature at one ocean location,
-    nearby points are highly correlated (high <d-math>k</d-math>) so you can confidently predict them.
+    This visualization makes physical sense: given the temperature at one ocean location,
+    nearby points are highly correlated (high <d-math>k</d-math>) and can be confidently predicted.
     Distant points contribute less information. The red dashed line marks <d-math>2\ell</d-math>,
-    where the kernel has dropped to about 13% of its peak&mdash;beyond this distance, correlation is weak.
+    where the kernel has dropped to about 13% of its peak. Beyond this distance, correlation is weak.
   </p>
 
   <p>
@@ -644,21 +645,16 @@
 
   <d-math block>
     \operatorname{cov}(y_i, y_j)
-      = \underbrace{\sigma_f^2 \exp\!\left(-\frac{\|\mathbf{x}_i - \mathbf{x}_j\|^2}{2\ell^2}\right)}_{\text{RBF kernel } k(\mathbf{x}_i, \mathbf{x}_j)}
-      + \;\underbrace{\sigma_n^2 \,\delta_{ij}}_{\text{noise}}
+      = \underset{\text{kernel } k(\mathbf{x}_i,\, \mathbf{x}_j)}{\sigma_f^2 \exp\!\left(-\frac{\|\mathbf{x}_i - \mathbf{x}_j\|^2}{2\ell^2}\right)}
+      + \;\underset{\text{noise}}{\sigma_n^2 \,\delta_{ij}}
   </d-math>
 
   <p>
     where <d-math>\delta_{ij} = 1</d-math> if <d-math>i = j</d-math> and 0 otherwise. The noise term
-    only appears on the diagonal&mdash;each observation has its own independent measurement error, but the
+    only appears on the diagonal: each observation has its own independent measurement error, but the
     underlying function is smooth.
   </p>
 
-  <aside>
-    <strong>Alternative kernels:</strong> The Mat&eacute;rn kernel is sometimes preferred for natural phenomena because it
-    allows finer control over smoothness. SST fields are smooth but not infinitely smooth, making Mat&eacute;rn a natural
-    choice in practice. For this tutorial, we focus on RBF for clarity.
-  </aside>
 
   <p>
     Given observations <d-math>\mathbf{y} = (y_1, \ldots, y_n)^\top</d-math> at locations
@@ -677,7 +673,7 @@
   </p>
 
   <p>
-    To see what this looks like in practice, let's apply a GP to our 1D SST cross-section from
+    To see what this looks like in practice, the following example applies a GP to the 1D SST cross-section from
     earlier. The standard approach is to first remove the mean from the observations, fit
     the GP to the residuals (anomalies), then add the mean back to the predictions.
   </p>
@@ -783,18 +779,18 @@
   <p>
     Notice how the uncertainty band widens in the cloud gaps and narrows where observations are dense.
     In the gaps, the GP prediction reverts toward the mean (the dashed line) because there is no
-    nearby data to constrain it. Next, we'll explore how changing the hyperparameters affects this fit.
+    nearby data to constrain it. The following sections explore how changing the hyperparameters affects this fit.
   </p>
 
   <!-- ======================== SPATIAL CORRELATION ======================== -->
 
   <!-- ======================== LENGTHSCALE INTERACTIVE ======================== -->
-  <h2>The Lengthscale Parameter</h2>
+  <h2>Lengthscale</h2>
   <p>
     The lengthscale <d-math>\ell</d-math> controls
     the spatial range of correlations in SST. A small lengthscale means the GP treats nearby
-    observations as nearly independent&mdash;the fit is rough and wiggly. A large lengthscale
-    means distant observations still inform each other&mdash;the fit becomes smooth.
+    observations as nearly independent, producing a rough, wiggly fit. A large lengthscale
+    means distant observations still inform each other, and the fit becomes smooth.
   </p>
   <p>
     Drag the slider to see how the lengthscale changes the interpolation of the same data:
@@ -920,7 +916,7 @@
 
   <p>
     Notice that with a very small lengthscale (&lt;1&deg;), the GP essentially memorizes each cluster
-    of observations but knows nothing about the gaps&mdash;uncertainty explodes between data clusters.
+    of observations but knows nothing about the gaps, so uncertainty explodes between data clusters.
     With a very large lengthscale (&gt;8&deg;), distant observations constrain each other and the fit
     becomes a gentle curve, but it can no longer capture local features.
   </p>
@@ -1232,7 +1228,7 @@
     </div>
     <div id="sv-interactive-plot" style="width:100%; height:400px;"></div>
     <figcaption>
-      Small signal variance means the model expects little variation&mdash;predictions regress toward the mean and
+      Small signal variance means the model expects little variation, so predictions regress toward the mean and
       the uncertainty band is narrow. Large signal variance lets the model express bigger swings and the
       uncertainty band grows accordingly.
     </figcaption>
@@ -1332,7 +1328,7 @@
   <p>
     When signal variance is too small, the posterior mean flattens out and can't reach the observed values.
     When it's too large, the model becomes overly confident that big swings are possible, which inflates
-    uncertainty far from data. The right value reflects the actual range of SST variation in your domain.
+    uncertainty far from data. The right value reflects the actual range of SST variation in the domain.
   </p>
 
   <p>And here is the same effect in 2D:</p>
@@ -1371,7 +1367,7 @@
   </script>
 
   <!-- ======================== NOISE VARIANCE INTERACTIVE ======================== -->
-  <h2>Noise Variance and Measurement Uncertainty</h2>
+  <h2>Noise Variance</h2>
   <p>
     The noise variance <d-math>\sigma_n^2</d-math> represents measurement error and small-scale
     variability we don't model. Buoys have measurement error on the order of 0.1&ndash;0.5&deg;C. Satellite SST products
@@ -1624,8 +1620,8 @@
   <!-- ======================== MARGINAL LIKELIHOOD ======================== -->
   <h2>Marginal Likelihood and Model Optimization</h2>
   <p>
-    How do we choose the hyperparameters <d-math>\theta = (\sigma_f^2, \ell, \sigma_n^2)</d-math>? The
-    most principled approach is to maximize the marginal likelihood&mdash;the probability of observing the data under our
+    How do we choose the hyperparameters <d-math>\theta = (\sigma_f^2, \ell, \sigma_n^2)</d-math>? 
+    One approach is to maximize the marginal likelihood, i.e. the probability of observing the data under our
     model, averaged over all possible functions consistent with the GP prior.
   </p>
 
@@ -1647,15 +1643,15 @@
     This has three terms:
   </p>
   <ul>
-    <li><strong>Data fit term:</strong> <d-math>-\frac{1}{2}\mathbf{y}^\top (\mathbf{K} + \sigma_n^2 \mathbf{I})^{-1} \mathbf{y}</d-math> &mdash; penalizes poor fit to data</li>
-    <li><strong>Complexity penalty:</strong> <d-math>-\frac{1}{2} \log |\mathbf{K} + \sigma_n^2 \mathbf{I}|</d-math> &mdash; penalizes overly complex functions (automatic Occam's razor)</li>
-    <li><strong>Normalization:</strong> <d-math>-\frac{n}{2} \log 2\pi</d-math> &mdash; constant term</li>
+    <li><strong>Data fit term:</strong> <d-math>-\frac{1}{2}\mathbf{y}^\top (\mathbf{K} + \sigma_n^2 \mathbf{I})^{-1} \mathbf{y}</d-math> penalizes poor fit to data</li>
+    <li><strong>Complexity penalty:</strong> <d-math>-\frac{1}{2} \log |\mathbf{K} + \sigma_n^2 \mathbf{I}|</d-math> penalizes overly complex functions (automatic Occam's razor)</li>
+    <li><strong>Normalization:</strong> <d-math>-\frac{n}{2} \log 2\pi</d-math> (constant term)</li>
   </ul>
 
   <figure class="l-page">
     <div id="lml-viz-container" style="position:relative; width:100%;"></div>
     <figcaption>
-      Log-marginal likelihood landscape for a 23-point SST subsample. The central heatmap shows
+      Log-marginal likelihood landscape for 23 SST observations along 6&deg;N. The central heatmap shows
       <d-math>\log p(\mathbf{y}\mid\boldsymbol{\theta})</d-math> as a function of noise standard deviation
       <d-math>\sigma_n</d-math> (x-axis) and lengthscale <d-math>\ell</d-math> (y-axis), with signal variance
       <d-math>\sigma_f^2</d-math> optimized at each point. Click anywhere on the heatmap to see the GP fit
@@ -1885,8 +1881,11 @@
 
       // Axes
       ig.append('g').attr('transform', 'translate(0,' + h + ')')
-        .call(d3.axisBottom(xS).ticks(4).tickSize(3).tickFormat(''))
-        .selectAll('.domain').attr('stroke', '#ccc');
+        .call(d3.axisBottom(xS).ticks(3).tickSize(3).tickFormat(function(d) { return Math.abs(d) + '\u00B0W'; }))
+        .selectAll('text').style('font-size', '7px');
+      ig.append('text').attr('x', w/2).attr('y', h + 17)
+        .attr('text-anchor', 'middle').style('font-size', '8px').style('fill', '#888')
+        .text('Longitude');
       ig.append('g').call(d3.axisLeft(yS).ticks(3).tickSize(3).tickFormat(function(d) { return d + '\u00B0'; }))
         .selectAll('text').style('font-size', '8px');
       ig.selectAll('.domain').attr('stroke', '#ccc');
@@ -2001,7 +2000,11 @@
       var yS = d3.scaleLinear().domain(insetYDomain).range([hh, 0]);
 
       ig.append('g').attr('transform', 'translate(0,' + hh + ')')
-        .call(d3.axisBottom(xS).ticks(4).tickSize(3).tickFormat(''));
+        .call(d3.axisBottom(xS).ticks(3).tickSize(3).tickFormat(function(d) { return Math.abs(d) + '\u00B0W'; }))
+        .selectAll('text').style('font-size', '7px');
+      ig.append('text').attr('x', ww/2).attr('y', hh + 17)
+        .attr('text-anchor', 'middle').style('font-size', '8px').style('fill', '#888')
+        .text('Longitude');
       ig.append('g').call(d3.axisLeft(yS).ticks(3).tickSize(3).tickFormat(function(d) { return d + '\u00B0'; }))
         .selectAll('text').style('font-size', '8px');
       ig.selectAll('.domain').attr('stroke', '#ccc');
@@ -2051,7 +2054,7 @@
 
   <p>
     This objective balances fitting the data with maintaining simplicity.
-    We don't need separate validation sets or hand-tuned regularization&mdash;the marginal likelihood inherently prefers
+    There is no need for separate validation sets or hand-tuned regularization; the marginal likelihood inherently prefers
     smooth functions unless the data strongly demands roughness.
   </p>
   <p>
@@ -2060,724 +2063,49 @@
     the log determinant and inverse are computed efficiently using Cholesky decomposition.
   </p>
 
-  <p>
-    However, marginal likelihood optimization can be unreliable when observations are sparse or
-    clustered&mdash;the optimizer may fit the available data well but produce poor predictions
-    elsewhere. In such cases, it is often better to set hyperparameters using domain expertise.
-    For example, in oceanography the lengthscale is commonly prescribed based on the local Rossby
-    radius of deformation (~10&nbsp;km at high latitudes to ~200&nbsp;km in the tropics), ensuring
-    the interpolation respects known dynamical scales even when the data alone cannot constrain them.
-  </p>
-
-  <!-- ======================== PRACTICAL TIPS ======================== -->
-  <h2>Practical Considerations for SST Interpolation</h2>
-
-  <h3>Data Preprocessing</h3>
-  <p>
-    Before fitting a GP to real SST data, several preprocessing steps improve results:
-  </p>
-  <ul>
-    <li><strong>Normalization:</strong> Center observations to mean zero and scale to unit variance. This improves
-    numerical stability and makes hyperparameter values more interpretable (a signal variance of ~1 is typical).</li>
-    <li><strong>Removing trends:</strong> If the data has a strong seasonal trend (warm in summer, cold in winter),
-    remove it first. GPs work best on deviations from a mean trend rather than the raw signal.</li>
-    <li><strong>Outlier detection:</strong> Real SST datasets can have bad observations due to instrument failure or
-    calibration issues. Robust outlier detection (e.g., using Huber loss) prevents fitting to false spikes.</li>
-    <li><strong>Spatial domain definition:</strong> Define clear boundaries for your region (e.g., Pacific Ocean west
-    of 120&deg;W, east of 120&deg;E). Handle boundary effects carefully&mdash;GPs assume smoothness, but abrupt coastlines violate
-    this.</li>
-  </ul>
-
-  <h3>Computational Considerations</h3>
-  <p>
-    GPs scale as <d-math>O(n^3)</d-math> in the number of observations due to matrix inversion. For
-    large SST datasets (satellite data can have millions of points), this becomes prohibitive. Common solutions:
-  </p>
-  <ul>
-    <li><strong>Sparse approximations:</strong> Use a subset of "inducing points" to approximate the full covariance.
-    The Sparse Variational GP and FITC approximation reduce complexity to <d-math>O(nm^2)</d-math>
-    where <d-math>m \ll n</d-math>.</li>
-    <li><strong>Local GPs:</strong> Divide the domain into tiles and fit separate GPs to each. This is memory-efficient
-    but can create discontinuities at tile boundaries.</li>
-    <li><strong>Mini-batch training:</strong> Use stochastic gradient descent with subsets of data, updating
-    hyperparameters iteratively rather than globally optimizing.</li>
-  </ul>
-
-  <h3>Handling Seasonal Variability</h3>
-  <p>
-    SST has strong seasonal cycles. The mean state differs between winter and summer, and variability patterns shift.
-    Approaches include:
-  </p>
-  <ul>
-    <li><strong>Separate models per season:</strong> Train independent GPs for January, April, July, October. This
-    allows each season's dynamics to be captured fully.</li>
-    <li><strong>Temporal GPs:</strong> Extend the GP to include time as a dimension, with a separable kernel
-    <d-math>k(\mathbf{x}, t; \mathbf{x}', t') = k_{\text{space}}(\mathbf{x}, \mathbf{x}') \cdot k_{\text{time}}(t, t')</d-math>.
-    This is powerful but computationally heavier.</li>
-    <li><strong>Basis function expansion:</strong> Use a finite set of seasonal modes (e.g., first 5 EOFs of
-    climatological SST variability) as a mean function for the GP.</li>
-  </ul>
-
-  <h3>Validation and Uncertainty Quantification</h3>
-  <p>
-    Always validate your GP model:
-  </p>
-  <ul>
-    <li><strong>Cross-validation:</strong> Hold out 10&ndash;20% of observations, train the GP on the rest, and measure
-    prediction error. The negative log likelihood of held-out data is a good metric.</li>
-    <li><strong>Prediction intervals:</strong> The posterior variance provides uncertainty. Check that ~95% of
-    held-out observations fall within the 95% confidence interval. If not, your uncertainty is miscalibrated.</li>
-    <li><strong>Residual analysis:</strong> Plot residuals (true value minus prediction) against position, magnitude,
-    and other features. Patterns indicate systematic errors in your model.</li>
-  </ul>
-
-  <aside>
-    <strong>Real-world example:</strong> NOAA's Optimum Interpolation Sea Surface Temperature (OISST) is a daily,
-    global 0.25&deg; resolution dataset that combines observations from satellites, ships, buoys, and Argo floats using
-    optimum interpolation&mdash;a technique closely related to Gaussian Process regression. OISST applies a bias
-    adjustment for satellite data relative to in situ measurements, then uses spatial correlation functions to
-    interpolate onto a regular grid with built-in uncertainty estimation.
-  </aside>
-
-  <!-- ======================== ADVANCED: MULTIPLE KERNELS ======================== -->
-  <h2>Advanced Topics: Beyond Simple Kernels</h2>
-
-  <h3>Compositional Kernels</h3>
-  <p>
-    Real SST has structure at multiple scales simultaneously. A single RBF kernel is limited. More expressive models
-    use sums and products of kernels:
-  </p>
-  <ul>
-    <li><strong>Sum of kernels:</strong> <d-math>k = k_1 + k_2</d-math> models phenomena at different
-    scales. Example: <d-math>k = \sigma_1^2 \exp(-r^2/2\ell_1^2) + \sigma_2^2 \exp(-r^2/2\ell_2^2)</d-math>
-    captures both local variability (short lengthscale) and regional patterns (long lengthscale).</li>
-    <li><strong>Product of kernels:</strong> <d-math>k = k_1 \cdot k_2</d-math> models interactions.
-    For spatio-temporal data, <d-math>k(\mathbf{x}, t; \mathbf{x}', t') = k_{\text{space}}(\mathbf{x}, \mathbf{x}') \cdot k_{\text{time}}(t, t')</d-math>
-    means correlation decays both with distance and time.</li>
-    <li><strong>Spectral mixtures:</strong> A weighted sum of sinusoidal kernels can approximate complex spectra. This
-    is powerful for capturing multi-scale SST variability.</li>
-  </ul>
-
-  <h3>Non-Stationary Kernels</h3>
-  <p>
-    SST properties vary regionally. The tropics have different dynamics than mid-latitudes. Non-stationary kernels allow
-    lengthscale and variance to vary spatially:
-  </p>
-
-  <d-math block>
-    k(\mathbf{x}, \mathbf{x}') = \sigma_f^2(\mathbf{x})\, \exp\!\left(-\frac{\|\mathbf{x} - \mathbf{x}'\|^2}{2\ell^2(\mathbf{x})}\right)
-    \tag{7}
-  </d-math>
-
-  <p>
-    where <d-math>\ell(\mathbf{x})</d-math> is a spatially-varying lengthscale. This is more complex to
-    implement but captures regional differences in oceanographic dynamics.
-  </p>
-
-  <h3>Anisotropic Kernels</h3>
-  <p>
-    The isotropic RBF kernel assumes that correlation decays at the same rate in all directions.
-    In the ocean, this is rarely the case: currents, coastlines, and Coriolis effects create
-    preferred directions of correlation. An anisotropic kernel replaces the single lengthscale
-    with a matrix:
-  </p>
-
-  <d-math block>
-    k(\mathbf{x}, \mathbf{x}') = \sigma_f^2 \exp\!\left(-\tfrac{1}{2}(\mathbf{x} - \mathbf{x}')^\top \boldsymbol{\Lambda}^{-1} (\mathbf{x} - \mathbf{x}')\right)
-    \tag{8}
-  </d-math>
-
-  <p>
-    where <d-math>\boldsymbol{\Lambda}</d-math> is a positive-definite matrix whose eigenvectors
-    define the principal directions of correlation and whose eigenvalues set the lengthscales along
-    those directions. For SST, zonal (east&ndash;west) correlation lengths are typically much longer
-    than meridional (north&ndash;south) ones, reflecting the dominant direction of ocean currents
-    and atmospheric forcing. Anisotropic kernels can also be made spatially varying, so that
-    the preferred direction rotates to follow local current geometry or coastline orientation.
-  </p>
-
-  <!-- ======================== CHALLENGES ======================== -->
-  <h2>Challenges and Limitations</h2>
-
-  <h3>Non-Stationarity in a Changing Climate</h3>
-  <p>
-    Both GP regression and classical OI assume that the covariance structure is fixed and known (or
-    learnable from available data). In practice, ocean variability is non-stationary: the spatial
-    correlation structure of SST changes with season, ENSO phase, and long-term climate trends.
-    A lengthscale estimated from 1990s data may not describe 2020s variability well. Locally
-    stationary approaches&mdash;fitting separate covariance parameters in moving windows of space
-    and time <d-cite key="kuusela_locally_2018"></d-cite>&mdash;offer one path forward, but require
-    enough data in each window to estimate parameters reliably. In a warming climate where the
-    background state itself is shifting, static covariance assumptions become increasingly
-    problematic, and methods that can adapt their covariance structure over time are essential.
-  </p>
-
-  <h3>Smoothing Over Important Gradients</h3>
-  <p>
-    GPs with isotropic kernels produce smooth interpolations by design. While this is usually
-    desirable, it can be problematic near ocean fronts, eddies, and boundary currents where
-    sharp temperature gradients carry dynamical significance. The posterior mean of a GP will
-    inevitably smooth across a front if the kernel lengthscale is comparable to or larger than
-    the frontal width, blurring a 2&deg;C gradient over 50&nbsp;km into a gentle slope. This is not
-    just a cosmetic issue&mdash;smoothed gradients underestimate geostrophic currents and
-    misrepresent the energetics of the flow. Potential remedies include using shorter
-    lengthscales (at the cost of noisier fields away from fronts), barrier kernels that
-    respect coastlines and known frontal positions, or physics-informed kernels such as the
-    Helmholtz decomposition approach of Berlinghieri et al. <d-cite key="berlinghieri_gaussian_2023"></d-cite>,
-    which encodes divergence and rotation structure directly into the GP prior.
-  </p>
-
-  <h3>Multi-Fidelity Methods</h3>
-  <p>
-    Real oceanographic datasets often combine observations from multiple sources with very
-    different accuracies, resolutions, and spatial coverage: high-resolution but cloud-contaminated
-    satellite SST, sparse but accurate in situ measurements from buoys and ships, and
-    coarse-resolution model output that provides complete spatial coverage. Rather than treating
-    all sources equally or discarding lower-quality data, multi-fidelity GP frameworks
-    systematically exploit correlations between data sources of varying fidelity.
-    Babaee et al. <d-cite key="babaee_multifidelity_2020"></d-cite> demonstrated this approach
-    for SST in Massachusetts and Cape Cod Bays, using autoregressive GP schemes that combine
-    satellite imagery with in situ measurements to produce predictions with calibrated uncertainty
-    maps. Multi-fidelity methods are especially valuable in coastal regions where satellite
-    coverage is poor and the interplay between different data sources matters most.
-  </p>
 
   <!-- ======================== CONCLUSION ======================== -->
   <h2>Conclusion</h2>
   <p>
     Gaussian Processes provide a principled, flexible framework for spatial interpolation of sea surface temperature.
     By modeling SST as a random function and conditioning on observations, GPs deliver not just point estimates but
-    full posterior distributions with quantified uncertainty&mdash;essential for decision-making in climate and oceanography.
+    full posterior distributions with quantified uncertainty.
   </p>
   <p>
-    The key hyperparameters&mdash;lengthscale, signal variance, and noise variance&mdash;have clear physical interpretations.
+    The key hyperparameters (lengthscale, signal variance, and noise variance) have clear physical interpretations.
     Lengthscale reflects ocean dynamical scales; signal variance captures the expected range of temperature variation;
     noise variance accounts for measurement error. Interactive tuning and visualization of these parameters builds intuition.
-  </p>
-  <p>
-    The marginal likelihood objective elegantly balances fitting observed data with maintaining simplicity, avoiding
-    overfitting without need for external validation. For large datasets, sparse approximations make GPs tractable.
-    Advanced extensions using composite kernels and spatially-varying parameters push
-    GPs toward state-of-the-art climate modeling.
-  </p>
-  <p>
-    While we have demonstrated these methods using sea surface temperature, the same optimal interpolation
-    and GP framework underpins gridded products across the ocean and climate sciences. Sea surface height
-    from satellite altimeters, subsurface temperature and salinity from Argo floats, dissolved oxygen
-    concentrations, ocean color and chlorophyll, and atmospheric reanalysis fields are all routinely
-    produced using variants of the techniques described here. NOAA's OISST, the Roemmich&ndash;Gilson Argo
-    climatology, and AVISO altimetry maps all rely on optimum interpolation at their core. The specific
-    kernel, lengthscale, and noise characteristics differ by variable and observing system, but the
-    mathematical machinery&mdash;covariance modeling, posterior inference, and hyperparameter
-    optimization&mdash;remains the same.
-  </p>
-  <p>
-    Whether you're reconstructing historical SST for climate analysis, nowcasting temperature for fisheries management,
-    or assimilating observations into weather models, Gaussian Processes remain one of the most elegant and effective
-    tools in your toolbox. The interactive visualizations above should give you intuition for how each component works.
-    The next step is implementing these methods on real data and seeing how they perform in your application.
-  </p>
-
-  <!-- ======================== OI NOTATION ======================== -->
-  <h2>Comparison with Optimal Interpolation</h2>
-
-  <p>
-    For simplicity, we follow the notation from Ide et al. (1997). However, many different notations
-    exist in the literature.
-  </p>
-
-  <ul>
-    <li><d-math>\mathbf{x}</d-math>: true state vector</li>
-    <li><d-math>\mathbf{x}_b</d-math>: background state (prior mean)</li>
-    <li><d-math>\mathbf{B}</d-math>: background error covariance matrix</li>
-    <li><d-math>\mathbf{y}</d-math>: observation vector</li>
-    <li><d-math>\mathbf{H}</d-math>: observation operator</li>
-    <li><d-math>\mathbf{R}</d-math>: observation error covariance</li>
-    <li><d-math>\mathbf{d} = \mathbf{y} - \mathbf{H}\mathbf{x}_b</d-math>: innovation</li>
-    <li><d-math>\mathbf{x}_a</d-math>: analysis (posterior mean)</li>
-    <li><d-math>\mathbf{P}_a</d-math>: posterior error covariance</li>
-  </ul>
-
-  <p>
-    While notational conventions vary, nearly all OI literature uses <d-math>\mathbf{x}</d-math>
-    for the state vector and <d-math>\mathbf{y}</d-math> for the observation vector&mdash;a sharp
-    distinction from GPR, which we discuss in the comparison below.
-  </p>
-
-  <h3>Formulation</h3>
-
-  <p>
-    Optimal interpolation is a data assimilation method grounded in Bayesian inference. The goal is
-    to estimate the most probable state <d-math>\mathbf{x}</d-math> of a physical system, given a
-    prior (or background) estimate <d-math>\mathbf{x}_b</d-math> and a set of noisy observations
-    <d-math>\mathbf{y}</d-math>. OI assumes Gaussian statistics for both the prior and the
-    observation noise. Some consider OI a form of objective analysis&mdash;an objective, systematic
-    approach to producing gridded datasets from sparse or irregular observations.
-  </p>
-
-  <p>We assume the following statistical models:</p>
-
-  <d-math block>
-    \mathbf{x} \sim \mathcal{N}(\mathbf{x}_b,\; \mathbf{B})
-    \qquad\qquad
-    \mathbf{y}\,|\,\mathbf{x} \sim \mathcal{N}(\mathbf{H}\mathbf{x},\; \mathbf{R})
-  </d-math>
-
-  <p>
-    Here <d-math>\mathbf{B}</d-math> is the prior (background) covariance matrix representing
-    uncertainty in the background field, and <d-math>\mathbf{R}</d-math> is the observation error
-    covariance. In practice, these matrices are set according to expert knowledge about the system,
-    empirical correlations, or physical reasoning. The operator <d-math>\mathbf{H}</d-math>
-    maps the state space to observation space.
-  </p>
-
-  <p>Bayes' theorem yields the posterior (analysis) mean and covariance:</p>
-
-  <d-math block>
-    \mathbf{x}_a = \mathbf{x}_b + \mathbf{K}\bigl(\mathbf{y} - \mathbf{H}\mathbf{x}_b\bigr)
-  </d-math>
-
-  <d-math block>
-    \mathbf{K} = \mathbf{B}\mathbf{H}^\top\bigl(\mathbf{H}\mathbf{B}\mathbf{H}^\top + \mathbf{R}\bigr)^{-1}
-  </d-math>
-
-  <d-math block>
-    \mathbf{P}_a = \bigl(\mathbf{I} - \mathbf{K}\mathbf{H}\bigr)\mathbf{B}
-  </d-math>
-
-  <p>
-    The gain matrix <d-math>\mathbf{K}</d-math> determines how much weight is given to the
-    innovation&mdash;the discrepancy between the observations and the background projected into
-    observation space. It balances confidence in the observations (via <d-math>\mathbf{R}</d-math>)
-    against confidence in the background (via <d-math>\mathbf{B}</d-math>). A larger
-    <d-math>\mathbf{R}</d-math> results in more reliance on the background, while a smaller
-    <d-math>\mathbf{R}</d-math> leads to more reliance on the observations.
-  </p>
-
-  <p>
-    OI produces a linear estimate that minimizes the expected mean squared error under Gaussian
-    assumptions. Intuitively, the analysis <d-math>\mathbf{x}_a</d-math> is a weighted average
-    between the prior estimate and the observations, where the weights depend on relative
-    uncertainties. In regions with sparse observational coverage, the analysis is heavily dictated
-    by the prescribed background state and its associated covariance <d-math>\mathbf{B}</d-math>.
-    By definition, OI is only truly &ldquo;optimal&rdquo; when the exact statistical properties of
-    the system are known. In practice, the background error covariance is frequently constructed
-    using idealized formulations (such as scaling spatial decorrelation lengths to the local Rossby
-    radius of deformation). When these idealized statistics differ too much from the truth,
-    predictions in data-sparse areas become highly unreliable.
-  </p>
-
-  <h3>Variational Interpretation</h3>
-
-  <p>OI can also be interpreted as the solution to a minimization problem with cost function:</p>
-
-  <d-math block>
-    J(\mathbf{x}) = (\mathbf{y} - \mathbf{H}\mathbf{x})^\top \mathbf{R}^{-1} (\mathbf{y} - \mathbf{H}\mathbf{x})
-    + (\mathbf{x} - \mathbf{x}_b)^\top \mathbf{B}^{-1} (\mathbf{x} - \mathbf{x}_b)
-  </d-math>
-
-  <p>
-    The first term penalizes mismatch with observations weighted by observation uncertainty; the
-    second penalizes deviation from the background weighted by background uncertainty. Minimizing
-    <d-math>J(\mathbf{x})</d-math> yields the analysis <d-math>\mathbf{x}_a</d-math>. This
-    variational view is equivalent to the Bayesian formulation under Gaussian assumptions.
-  </p>
-
-  <p>
-    OI can be interpreted as a special case of the Kalman filter where there is no time evolution
-    of the state, only an update step using new observations. It is also algebraically equivalent
-    to 3D-Var (three-dimensional variational data assimilation) under linear and Gaussian
-    assumptions <d-cite key="lorenc_analysis_1986"></d-cite>. Because OI is strictly an
-    interpolation method used when no forward dynamical model is assumed or computationally
-    feasible, it cannot dynamically evolve the background covariance. Instead, the covariance must
-    be prescribed using historical observations, empirical fitting, or expert domain knowledge.
-  </p>
-
-  <h3>GPR vs. OI at a Glance</h3>
-
-  <style>
-    .comparison-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-      margin: 1.5rem 0;
-    }
-    .comparison-table th,
-    .comparison-table td {
-      border: 1px solid #ddd;
-      padding: 0.5rem 0.75rem;
-      text-align: left;
-    }
-    .comparison-table th {
-      background: #f5f5f5;
-      font-weight: 600;
-    }
-    .comparison-table tr:nth-child(even) td {
-      background: #fafafa;
-    }
-  </style>
-
-  <table class="comparison-table">
-    <thead>
-      <tr>
-        <th>Concept</th>
-        <th>GPR</th>
-        <th>OI</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>Prior mean</td>
-        <td><d-math>m(\mathbf{X})</d-math></td>
-        <td><d-math>\mathbf{x}_b</d-math></td>
-      </tr>
-      <tr>
-        <td>Covariance</td>
-        <td><d-math>k(\cdot, \cdot)</d-math></td>
-        <td><d-math>\mathbf{B}</d-math></td>
-      </tr>
-      <tr>
-        <td>Covariance estimation</td>
-        <td>Learned (marginal likelihood)</td>
-        <td>Prescribed (domain knowledge)</td>
-      </tr>
-      <tr>
-        <td>Observation noise</td>
-        <td><d-math>\sigma_n^2 \mathbf{I}</d-math></td>
-        <td><d-math>\mathbf{R}</d-math></td>
-      </tr>
-      <tr>
-        <td>Observation operator</td>
-        <td>Implicit (identity)</td>
-        <td><d-math>\mathbf{H}</d-math></td>
-      </tr>
-      <tr>
-        <td>Posterior mean</td>
-        <td><d-math>\bar{\mathbf{f}}_*</d-math></td>
-        <td><d-math>\mathbf{x}_a</d-math></td>
-      </tr>
-      <tr>
-        <td>Posterior covariance</td>
-        <td><d-math>\mathrm{cov}(\mathbf{f}_*)</d-math></td>
-        <td><d-math>\mathbf{P}_a</d-math></td>
-      </tr>
-    </tbody>
-  </table>
-
-  <p>
-    While used in different domains, GPR and OI are fundamentally similar: both provide Bayesian
-    estimates from uncertain observations. GPR generalizes OI by allowing learned kernel structures
-    and flexible prior means, whereas OI often leverages domain-specific knowledge for covariance
-    specification&mdash;and prescribing the covariance manually is less computationally expensive
-    than training.
-  </p>
-
-  <p>
-    One of the main sources of confusion when comparing GPR and OI is that the variables
-    <d-math>\mathbf{x}</d-math> and <d-math>\mathbf{y}</d-math> refer to different quantities in
-    each method, and this distinction should be noted carefully. In GPR the goal is
-    <em>regression</em>, so the notation follows the usual machine-learning convention:
-    <d-math>\mathbf{x}</d-math> represents the <em>input variables</em> (regressors) and
-    <d-math>\mathbf{y}</d-math> represents the <em>predicted quantity</em> (regressand). In
-    contrast, OI is a <em>state-estimation</em> method: <d-math>\mathbf{x}</d-math> denotes the
-    <em>state we want to estimate</em>, and <d-math>\mathbf{y}</d-math> denotes the
-    <em>observations used to estimate that state</em>.
   </p>
 
 </d-article>
 
 <d-appendix>
-  <h3>Interactive Resources</h3>
-  <ul>
-    <li><a href="https://distill.pub/2019/visual-exploration-gaussian-processes/">A Visual Exploration of Gaussian Processes</a>&mdash;G&ouml;rtler, Kehlbeck &amp; Deussen (2019). The Distill article that inspired many of the interactive visualizations in this tutorial.</li>
-    <li><a href="https://infallible-thompson-49de36.netlify.app/">A Practical Guide to Gaussian Processes</a>&mdash;a companion deployment with additional interactive figures including the marginal likelihood landscape.</li>
-    <li><a href="https://www.infinitecuriosity.org/vizgp/">VizGP</a>&mdash;an interactive tool for building intuition about GP kernels and their effect on predictions.</li>
-    <li><a href="https://mlatcl.github.io/gpss/lectures/06-approximate-gps.html">Approximate GPs (GPSS Lectures)</a>&mdash;lecture notes from the Gaussian Process Summer School covering sparse and scalable GP methods.</li>
-  </ul>
-
-  <h3>Further Reading</h3>
-  <ul>
-    <li><strong>Gaussian Processes for Machine Learning</strong> <d-cite key="rasmussen_gaussian_2006"></d-cite>&mdash;the definitive reference on GP theory and practice, freely available online.</li>
-    <li><strong>Statistics for Spatial Data</strong> <d-cite key="cressie_spatial_1993"></d-cite>&mdash;the foundational text on geostatistics, kriging, and spatial prediction.</li>
-    <li><strong>Objective Analysis of Meteorological Fields</strong> <d-cite key="gandin_objective_1965"></d-cite>&mdash;Gandin's seminal work formalizing optimum interpolation for meteorology.</li>
-    <li><strong>Explaining and Connecting Kriging with GP Regression</strong> <d-cite key="marinescu_explaining_2024"></d-cite>&mdash;a thorough mathematical comparison of kriging variants and GP regression.</li>
-    <li><strong>Analysis Methods for NWP</strong> <d-cite key="lorenc_analysis_1986"></d-cite>&mdash;Lorenc's unifying perspective connecting OI, kriging, variational methods, and Kalman filtering.</li>
-    <li><strong>A Bayesian Tutorial for Data Assimilation</strong> <d-cite key="wikle_bayesian_2007"></d-cite>&mdash;links optimal interpolation, kriging, Kalman filtering, and Bayesian inference.</li>
-  </ul>
-
-  <p>
-    This interactive article was created to make Gaussian Process methodology accessible to climate and ocean scientists.
-    All visualizations are rendered client-side in JavaScript; no data is transmitted to external servers.
-  </p>
-
-  <d-bibliography>
-    <script type="text/bibliography">
-@book{rasmussen_gaussian_2006,
-  title={Gaussian Processes for Machine Learning},
-  author={Rasmussen, Carl Edward and Williams, Christopher K. I.},
-  series={Adaptive Computation and Machine Learning},
-  year={2006},
-  publisher={MIT Press},
-  address={Cambridge, MA}
-}
-@article{krige_statistical_1951,
-  title={A statistical approach to some basic mine valuation problems on the Witwatersrand},
-  author={Krige, Daniel G.},
-  journal={Journal of the South African Institute of Mining and Metallurgy},
-  volume={52},
-  pages={201--203},
-  year={1951}
-}
-@article{matheron_principles_1963,
-  title={Principles of geostatistics},
-  author={Matheron, Georges},
-  journal={Economic Geology},
-  volume={58},
-  number={8},
-  pages={1246--1266},
-  year={1963},
-  doi={10.2113/gsecongeo.58.8.1246}
-}
-@incollection{cressie_spatial_1993,
-  title={Spatial Prediction and Kriging},
-  author={Cressie, Noel A. C.},
-  booktitle={Statistics for Spatial Data},
-  publisher={John Wiley and Sons},
-  year={1993},
-  pages={105--209},
-  doi={10.1002/9781119115151.ch3}
-}
-@book{ripley_spatial_2005,
-  title={Spatial Statistics},
-  author={Ripley, Brian D.},
-  publisher={John Wiley and Sons},
-  year={2005}
-}
-@article{kimeldorf_correspondence_1970,
-  title={A Correspondence Between Bayesian Estimation on Stochastic Processes and Smoothing by Splines},
-  author={Kimeldorf, George S. and Wahba, Grace},
-  journal={The Annals of Mathematical Statistics},
-  volume={41},
-  number={2},
-  pages={495--502},
-  year={1970}
-}
-@article{kolmogorov_interpolirovanie_1941,
-  title={Interpolation and extrapolation of stationary random sequences},
-  author={Kolmogorov, A. N.},
-  journal={Izvestia AN SSSR, Seriya Matematicheskaya},
-  volume={5},
-  number={1},
-  year={1941}
-}
-@book{wiener_extrapolation_1949,
-  title={Extrapolation, Interpolation, and Smoothing of Stationary Time Series},
-  author={Wiener, Norbert},
-  publisher={MIT Press},
-  year={1949}
-}
-@misc{marinescu_explaining_2024,
-  title={Explaining and Connecting Kriging with Gaussian Process Regression},
-  author={Marinescu, Marius},
-  year={2024},
-  url={https://arxiv.org/abs/2408.02331},
-  doi={10.48550/arXiv.2408.02331}
-}
-@book{gandin_objective_1965,
-  title={Objective Analysis of Meteorological Fields},
-  author={Gandin, L. S.},
-  publisher={Israel Program for Scientific Translations},
-  address={Jerusalem},
-  year={1965}
-}
-@article{bretherton_technique_1976,
-  title={A technique for objective analysis and design of oceanographic experiments applied to MODE-73},
-  author={Bretherton, Francis P. and Davis, Russ E. and Fandry, C. B.},
-  journal={Deep Sea Research and Oceanographic Abstracts},
-  volume={23},
-  number={7},
-  pages={559--582},
-  year={1976},
-  doi={10.1016/0011-7471(76)90001-2}
-}
-@article{lorenc_analysis_1986,
-  title={Analysis methods for numerical weather prediction},
-  author={Lorenc, A. C.},
-  journal={Quarterly Journal of the Royal Meteorological Society},
-  volume={112},
-  number={474},
-  pages={1177--1194},
-  year={1986},
-  doi={10.1002/qj.49711247414}
-}
-@book{daley_atmospheric_1991,
-  title={Atmospheric Data Analysis},
-  author={Daley, Roger},
-  series={Cambridge Atmospheric and Space Science Series},
-  publisher={Cambridge University Press},
-  year={1991}
-}
-@incollection{thomson_chapter_2014,
-  title={Chapter 4 -- The Spatial Analyses of Data Fields},
-  author={Thomson, Richard E. and Emery, William J.},
-  booktitle={Data Analysis Methods in Physical Oceanography},
-  edition={Third},
-  publisher={Elsevier},
-  address={Boston},
-  year={2014},
-  pages={313--424},
-  doi={10.1016/B978-0-12-387782-6.00004-1}
-}
-@article{reynolds_real-time_1988,
-  title={A Real-Time Global Sea Surface Temperature Analysis},
-  author={Reynolds, Richard W.},
-  journal={Journal of Climate},
-  volume={1},
-  number={1},
-  pages={75--87},
-  year={1988}
-}
-@article{reynolds_improved_1994,
-  title={Improved Global Sea Surface Temperature Analyses Using Optimum Interpolation},
-  author={Reynolds, Richard W. and Smith, Thomas M.},
-  journal={Journal of Climate},
-  volume={7},
-  number={6},
-  pages={929--948},
-  year={1994}
-}
-@article{huang2021,
-  title={Improvements of the daily optimum interpolation sea surface temperature (DOISST) version 2.1},
-  author={Huang, Boyin and Liu, Chunying and Banzon, Viva and Freeman, Eric and Graham, Garrett and Hankins, Bill and Smith, Tom and Zhang, Huai-Min},
-  journal={Journal of Climate},
-  volume={34},
-  number={8},
-  pages={2923--2939},
-  year={2021}
-}
-@article{zhang_gaussian_2021,
-  title={A Gaussian process regression-based sea surface temperature interpolation algorithm},
-  author={Zhang, Yongshun and Feng, Miao and Zhang, Weimin and Wang, Huizan and Wang, Pinqiang},
-  journal={Journal of Oceanology and Limnology},
-  volume={39},
-  number={4},
-  pages={1211--1221},
-  year={2021},
-  doi={10.1007/s00343-020-0062-1}
-}
-@article{gortler_visual_2019,
-  title={A Visual Exploration of Gaussian Processes},
-  author={Goertler, Jochen and Kehlbeck, Rebecca and Deussen, Oliver},
-  journal={Distill},
-  volume={4},
-  number={4},
-  pages={e17},
-  year={2019},
-  doi={10.23915/distill.00017}
-}
-@misc{berlinghieri_gaussian_2023,
-  title={Gaussian processes at the Helmholtz: A more fluid model for ocean currents},
-  author={Berlinghieri, Renato and Trippe, Brian L. and Burt, David R. and Giordano, Ryan and Srinivasan, Kaushik and Ozgokmen, Tamay and Xia, Junfei and Broderick, Tamara},
-  year={2023},
-  url={http://arxiv.org/abs/2302.10364},
-  doi={10.48550/arXiv.2302.10364}
-}
-@article{park_spatiotemporal_2023,
-  title={Spatiotemporal local interpolation of global ocean heat transport using Argo floats: A debiased latent Gaussian process approach},
-  author={Park, Beomjo and Kuusela, Mikael and Giglio, Donata and Gray, Alison},
-  journal={The Annals of Applied Statistics},
-  volume={17},
-  number={2},
-  pages={1491--1520},
-  year={2023},
-  doi={10.1214/22-AOAS1679}
-}
-@article{kuusela_locally_2018,
-  title={Locally stationary spatio-temporal interpolation of Argo profiling float data},
-  author={Kuusela, Mikael and Stein, Michael L.},
-  journal={Proceedings of the Royal Society A},
-  volume={474},
-  number={2220},
-  pages={20180400},
-  year={2018},
-  doi={10.1098/rspa.2018.0400}
-}
-@article{gregory_scalable_2024,
-  title={Scalable interpolation of satellite altimetry data with probabilistic machine learning},
-  author={Gregory, William and MacEachern, Ronald and Takao, So and Lawrence, Isobel and Nab, Carmen and Deisenroth, Mark and Tsamados, Michel},
-  journal={Preprint},
-  year={2024}
-}
-@article{wikle_bayesian_2007,
-  title={A Bayesian tutorial for data assimilation},
-  author={Wikle, Christopher K. and Berliner, L. Mark},
-  journal={Physica D: Nonlinear Phenomena},
-  volume={230},
-  number={1},
-  pages={1--16},
-  year={2007},
-  doi={10.1016/j.physd.2006.09.017}
-}
-@article{stammer_ocean_2016,
-  title={Ocean Data Assimilation in Support of Climate Applications: Status and Perspectives},
-  author={Stammer, D. and Balmaseda, M. and Heimbach, P. and Koehl, A. and Weaver, A.},
-  journal={Annual Review of Marine Science},
-  volume={8},
-  number={1},
-  pages={491--518},
-  year={2016},
-  doi={10.1146/annurev-marine-122414-034113}
-}
-@article{quinonero2005,
-  title={A unifying view of sparse approximate Gaussian process regression},
-  author={Quinonero-Candela, Joaquin and Rasmussen, Carl Edward},
-  journal={Journal of Machine Learning Research},
-  volume={6},
-  pages={1939--1959},
-  year={2005}
-}
-@article{sonnewald_bridging_2021,
-  title={Bridging observations, theory and numerical simulation of the ocean using machine learning},
-  author={Sonnewald, Maike and Lguensat, Redouane and Jones, Daniel C. and Dueben, Peter D. and Brajard, Julien and Balaji, V.},
-  journal={Environmental Research Letters},
-  volume={16},
-  number={7},
-  pages={073008},
-  year={2021},
-  doi={10.1088/1748-9326/ac0eb0}
-}
-@article{roemmich_20042008_2009,
-  title={The 2004--2008 mean and annual cycle of temperature, salinity, and steric height in the global ocean from the Argo Program},
-  author={Roemmich, Dean and Gilson, John},
-  journal={Progress in Oceanography},
-  volume={82},
-  number={2},
-  pages={81--100},
-  year={2009},
-  doi={10.1016/j.pocean.2009.03.004}
-}
-@article{traon_improved_1998,
-  title={An Improved Mapping Method of Multisatellite Altimeter Data},
-  author={Le Traon, P. Y. and Nadal, F. and Ducet, N.},
-  journal={Journal of Atmospheric and Oceanic Technology},
-  volume={15},
-  number={2},
-  pages={522--534},
-  year={1998}
-}
-@article{babaee_multifidelity_2020,
-  title={A Multifidelity Framework and Uncertainty Quantification for Sea Surface Temperature in the Massachusetts and Cape Cod Bays},
-  author={Babaee, H. and Bastidas, C. and DeFilippo, M. and Chryssostomidis, C. and Karniadakis, G. E.},
-  journal={Earth and Space Science},
-  volume={7},
-  number={2},
-  pages={e2019EA000954},
-  year={2020},
-  doi={10.1029/2019EA000954}
-}
-    </script>
-  </d-bibliography>
 </d-appendix>
+
+<d-bibliography src="bibliography.bib">
+<script type="text/bibliography">
+@article{ito_assessing_2025,
+  title={Assessing the Observational Uncertainties of Dissolved Oxygen Climatology and Seasonal Cycle Through a Coordinated Intercomparison Project},
+  volume={39},
+  doi={10.1029/2025GB008751},
+  number={11},
+  journal={Global Biogeochemical Cycles},
+  author={Ito, Takamitsu and Garcia, Hernan E. and Wang, Zhankun and Cheng, Lijing and Du, Juan and Roach, Christopher J. and Zhou, Yuntao and Sharp, Jonathan D. and Lauvset, Siv K. and Minobe, Shoshiro and Bushinsky, Seth and Lu, Bin and Navarra, Giangiacomo},
+  year={2025},
+  pages={e2025GB008751},
+}
+@article{menemenlis_consequential_2025,
+  title={Consequential differences in satellite-era sea surface temperature trends across datasets},
+  volume={15},
+  doi={10.1038/s41558-025-02362-6},
+  number={8},
+  journal={Nature Climate Change},
+  author={Menemenlis, S. and Vecchi, G. A. and Yang, Wenchang and Fueglistaler, S. and Raghuraman, S. P.},
+  year={2025},
+  pages={897--903},
+}
+</script>
+</d-bibliography>
 
 <!-- Project JavaScript -->
 <script src="js/gp.js"></script>
