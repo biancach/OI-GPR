@@ -23,7 +23,7 @@
   <script type="text/json">{
     "title": "Optimal Interpolation",
     "description": "An interactive introduction to optimal interpolation and Gaussian Processes for Earth sciences, using sea surface temperature in the tropical Pacific.",
-    "publishedDate": "2025-05-01",
+    "publishedDate": "2026-03-09",
     "authors": [
       {
         "author": "Bianca Champenois"
@@ -269,12 +269,10 @@
   <p>
     Understanding the distribution and variability of sea surface temperature (SST) 
     is fundamental to climate science, weather prediction, and ocean ecology.
-    Yet the choices we make when interpolating observations into gridded products have real consequences:
-    satellite-era SST trends differ substantially across widely used datasets, with decadal warming rates
-    varying by nearly a factor of two depending on the interpolation method
-    <d-cite key="menemenlis_consequential_2025"></d-cite>. Similar sensitivities arise
-    for dissolved oxygen climatologies, where mapping methodology is a dominant source of disagreement
-    among observation-based estimates <d-cite key="ito_assessing_2025"></d-cite>.
+    Yet the choices we make when interpolating observations into gridded products have real consequences
+    for SST <d-cite key="menemenlis_consequential_2025"></d-cite>, dissolved oxygen <d-cite key="ito_assessing_2025"></d-cite>,
+    and other ocean variables: decadal warming rates, for example, vary by nearly a factor of two across
+    widely used SST datasets depending on the interpolation method.
   </p>
   <p>
     This is where understanding <strong>spatial interpolation</strong> becomes essential. Given sparse,
@@ -283,17 +281,17 @@
     how methodological choices shape the results.
   </p>
   <p>
-    Gaussian Processes (GPs) are a powerful class of models that treat the unknown SST field as a continuous
+    Gaussian Processes (GPs) <d-cite key="rasmussen_gaussian_2006"></d-cite> are a powerful class of models that treat the unknown SST field as a continuous
     random function. They encode prior beliefs about smoothness and spatial correlation through covariance
-    functions, then condition these beliefs on observed data to produce predictions with quantified uncertainty. 
-    The mathematical formulation for Gaussian Process Regression is identical to Optimal Interpolation, a popular
+    functions, then condition these beliefs on observed data to produce predictions with quantified uncertainty.
+    The mathematical formulation for Gaussian Process Regression is equivalent to Optimal Interpolation <d-cite key="gandin_objective_1965,krige_statistical_1951"></d-cite>, a popular
     interpolation method in Earth sciences. The interactive visualizations below illustrate how each hyperparameter shapes the interpolation.
   </p>
 
   <!-- ======================== THE PROBLEM ======================== -->
   <h2>The Spatial Interpolation Problem</h2>
   <p>
-    The goal is to reconstruct a temperature field from sparse, noisy measurements.
+    The goal is to reconstruct a field from sparse, noisy measurements.
     Each observation <d-math>y_i</d-math> is a measured value (e.g. SST) at location
     <d-math>\mathbf{x}_i</d-math>, where <d-math>\mathbf{x}</d-math> is a spatial coordinate
     (e.g. longitude, or latitude/longitude, or latitude/longitude/time).
@@ -440,7 +438,7 @@
   <!-- ======================== MEAN AND COVARIANCE ======================== -->
   <h2>Mean and Covariance Functions</h2>
   <p>
-    A Gaussian Process is completely defined by two functions: a mean function
+    A Gaussian Process is defined by two functions: a mean function
     <d-math>m(\mathbf{x})</d-math> and a covariance function (or <em>kernel</em>)
     <d-math>k(\mathbf{x}, \mathbf{x}')</d-math>. We write:
   </p>
@@ -451,14 +449,14 @@
   </d-math>
 
   <p>
-    The mean function captures the overall trend in SST. For the Pacific, this might be a simple north-south
+    The mean function is optional and captures the overall trend. For SST in the Pacific, this might be a simple north-south
     gradient (warmer near the equator) or a more complex pattern obtained from a model or climatology 
-    reflecting seasonal climate. The covariance function encodes how strongly temperatures at different 
-    locations are related.
+    reflecting seasonal climate. 
   </p>
 
   <p>
-    For SST, the covariance function should reflect physical intuition:
+    The covariance function encodes how strongly the field values at different
+    locations are related. For SST, the covariance function should reflect physical intuition:
   </p>
   <ul>
     <li><strong>Nearby locations are highly correlated:</strong> <d-math>k(\mathbf{x}, \mathbf{x}')</d-math>
@@ -632,7 +630,7 @@
     correlation decays. Small <d-math>\ell</d-math> means nearby locations are quickly decorrelated;
     large <d-math>\ell</d-math> means correlation persists over long distances.</li>
     <li><strong>Noise variance</strong> <d-math>\sigma_n^2</d-math>: Measurement uncertainty and
-    small-scale variability we don't model. Larger <d-math>\sigma_n^2</d-math> means we trust observations less.</li>
+    small-scale variability not captured by the model. Larger <d-math>\sigma_n^2</d-math> means observations are trusted less.</li>
   </ul>
 
   <p>
@@ -657,8 +655,10 @@
 
 
   <p>
-    Given observations <d-math>\mathbf{y} = (y_1, \ldots, y_n)^\top</d-math> at locations
-    <d-math>\mathbf{X} = (\mathbf{x}_1, \ldots, \mathbf{x}_n)</d-math>, the Gaussian Process model is:
+    Given <d-math>n</d-math> observations <d-math>\mathbf{y} = (y_1, \ldots, y_n)^\top</d-math> at locations
+    <d-math>\mathbf{X} = (\mathbf{x}_1, \ldots, \mathbf{x}_n)</d-math>, let
+    <d-math>\mathbf{f} = (f(\mathbf{x}_1), \ldots, f(\mathbf{x}_n))^\top</d-math> denote the true
+    (unknown) field values at those locations. The Gaussian Process model is:
   </p>
 
   <d-math block>
@@ -667,14 +667,15 @@
   </d-math>
 
   <p>
-    The observations are modeled as the true function plus independent Gaussian noise. The covariance matrix
-    <d-math>\mathbf{K}</d-math> captures correlations between all pairs of observed locations,
+    Each observation is the true field value plus independent Gaussian noise. The covariance matrix
+    <d-math>\mathbf{K}</d-math>, with entries <d-math>K_{ij} = k(\mathbf{x}_i, \mathbf{x}_j)</d-math>,
+    captures correlations between all pairs of observed locations,
     and <d-math>\sigma_n^2 \mathbf{I}</d-math> accounts for measurement noise.
   </p>
 
   <p>
     To see what this looks like in practice, the following example applies a GP to the 1D SST cross-section from
-    earlier. The standard approach is to first remove the mean from the observations, fit
+    earlier. The standard approach in Earth sciences is often to first remove the mean from the observations, fit
     the GP to the residuals (anomalies), then add the mean back to the predictions.
   </p>
 
@@ -922,8 +923,7 @@
   </p>
 
   <p>
-    The 2D lengthscale slider below shows the same effect in the subdomain. Drag to see how
-    the GP fills in the cloud gaps:
+    The same effect applies in 2D. Drag the slider to see how the GP fills in the cloud gaps:
   </p>
 
   <figure class="l-body-outset">
@@ -1326,12 +1326,12 @@
   </script>
 
   <p>
-    When signal variance is too small, the posterior mean flattens out and can't reach the observed values.
+    When signal variance is too small, the posterior mean flattens out and cannot reach the observed values.
     When it's too large, the model becomes overly confident that big swings are possible, which inflates
     uncertainty far from data. The right value reflects the actual range of SST variation in the domain.
   </p>
 
-  <p>And here is the same effect in 2D:</p>
+  <p>Here is the same effect in 2D:</p>
 
   <figure class="l-body-outset">
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 10px;">
@@ -1370,7 +1370,7 @@
   <h2>Noise Variance</h2>
   <p>
     The noise variance <d-math>\sigma_n^2</d-math> represents measurement error and small-scale
-    variability we don't model. Buoys have measurement error on the order of 0.1&ndash;0.5&deg;C. Satellite SST products
+    variability not captured by the model. Buoys have measurement error on the order of 0.1&ndash;0.5&deg;C. Satellite SST products
     can have bias and error on the order of 0.5&ndash;2&deg;C depending on location and atmospheric conditions.
   </p>
   <p>
@@ -1485,7 +1485,7 @@
   })();
   </script>
 
-  <p>And the same effect in 2D:</p>
+  <p>Here is the same effect in 2D:</p>
 
   <figure class="l-body-outset">
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; padding:0 10px;">
@@ -1521,9 +1521,10 @@
   </script>
 
   <p>
-    Getting noise variance right is crucial for good predictions. Too small, and we overfit to measurement artifacts.
-    Too large, and we ignore real data. In practice, we estimate this from the data using the marginal likelihood
-    (discussed next) or from knowledge of instrument specifications.
+    When noise variance is too small, the model overfits to measurement artifacts.
+    When it is too large, real structure in the data is smoothed away. In practice, noise variance
+    can be set from instrument specifications or estimated from the data using the marginal likelihood
+    (discussed next).
   </p>
 
   <script>
@@ -1645,7 +1646,7 @@
   <ul>
     <li><strong>Data fit term:</strong> <d-math>-\frac{1}{2}\mathbf{y}^\top (\mathbf{K} + \sigma_n^2 \mathbf{I})^{-1} \mathbf{y}</d-math> penalizes poor fit to data</li>
     <li><strong>Complexity penalty:</strong> <d-math>-\frac{1}{2} \log |\mathbf{K} + \sigma_n^2 \mathbf{I}|</d-math> penalizes overly complex functions (automatic Occam's razor)</li>
-    <li><strong>Normalization:</strong> <d-math>-\frac{n}{2} \log 2\pi</d-math> (constant term)</li>
+    <li><strong>Normalization:</strong> <d-math>-\frac{n}{2} \log 2\pi</d-math> ensures the Gaussian density integrates to one; it does not depend on the hyperparameters</li>
   </ul>
 
   <figure class="l-page">
@@ -2103,6 +2104,27 @@
   author={Menemenlis, S. and Vecchi, G. A. and Yang, Wenchang and Fueglistaler, S. and Raghuraman, S. P.},
   year={2025},
   pages={897--903},
+}
+@book{rasmussen_gaussian_2006,
+  series={Adaptive Computation and Machine Learning},
+  title={Gaussian Processes for Machine Learning},
+  publisher={MIT Press},
+  author={Rasmussen, Carl Edward and Williams, Christopher K. I.},
+  year={2006},
+}
+@book{gandin_objective_1965,
+  title={Objective analysis of meteorological fields},
+  publisher={Israel Program for Scientific Translations},
+  author={Gandin, L. S.},
+  year={1965},
+}
+@article{krige_statistical_1951,
+  title={A statistical approach to some basic mine valuation problems on the Witwatersrand},
+  volume={52},
+  journal={Journal of The South African Institute of Mining and Metallurgy},
+  author={Krige, Daniel G.},
+  year={1951},
+  pages={201--203},
 }
 </script>
 </d-bibliography>
